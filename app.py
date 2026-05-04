@@ -262,6 +262,30 @@ def pdf_preview(path: Path, height: int = 720) -> None:
 
 
 def upload_panel(section: str) -> None:
+    # Show any pending banner from a previous run (survives st.rerun)
+    flash_key = f"flash_{section}"
+    flash = st.session_state.pop(flash_key, None)
+    if flash:
+        kind, msg = flash
+        if kind == "ok":
+            st.markdown(
+                f'<div style="padding:14px 18px;border-radius:12px;'
+                f'background:linear-gradient(90deg,#10B981 0%,#059669 100%);'
+                f'color:white;font-weight:700;border:1px solid #34D399;'
+                f'box-shadow:0 6px 20px rgba(16,185,129,0.35);margin-bottom:12px;">'
+                f'✅ {msg}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<div style="padding:14px 18px;border-radius:12px;'
+                f'background:linear-gradient(90deg,#DC2626 0%,#B91C1C 100%);'
+                f'color:white;font-weight:700;border:1px solid #F87171;'
+                f'box-shadow:0 6px 20px rgba(220,38,38,0.35);margin-bottom:12px;">'
+                f'❌ {msg}</div>',
+                unsafe_allow_html=True,
+            )
+
     with st.expander(f"⬆️  Upload a new {section} report", expanded=False):
         with st.form(f"upload_form_{section}", clear_on_submit=True):
             up = st.file_uploader(
@@ -297,24 +321,34 @@ def upload_panel(section: str) -> None:
             )
             if submitted:
                 if up is None:
-                    st.error("Please choose a PDF file first.")
+                    st.session_state[flash_key] = ("err", "Please choose a PDF file first.")
+                    st.rerun()
                 elif not ev_name.strip():
-                    st.error("Please enter the event name.")
+                    st.session_state[flash_key] = ("err", "Please enter the event name.")
+                    st.rerun()
                 elif not brand.strip():
-                    st.error("Please enter the brand / client.")
+                    st.session_state[flash_key] = ("err", "Please enter the brand / client.")
+                    st.rerun()
                 else:
-                    row = save_report(
-                        section=section,
-                        event_date=ev_date,
-                        event_name=ev_name,
-                        brand=brand,
-                        file_bytes=up.getvalue(),
-                        original_name=up.name,
-                    )
-                    st.success(
-                        f"Saved **{row['event_name']}** "
-                        f"({row['event_date']}) to {section}."
-                    )
+                    try:
+                        row = save_report(
+                            section=section,
+                            event_date=ev_date,
+                            event_name=ev_name,
+                            brand=brand,
+                            file_bytes=up.getvalue(),
+                            original_name=up.name,
+                        )
+                        st.session_state[flash_key] = (
+                            "ok",
+                            f"Report successfully uploaded — "
+                            f"{row['event_name']} ({row['event_date']}) → {section}",
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        st.session_state[flash_key] = (
+                            "err",
+                            f"Upload failed: {exc}",
+                        )
                     st.rerun()
 
 
