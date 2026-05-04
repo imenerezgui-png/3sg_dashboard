@@ -717,70 +717,89 @@ def render_media() -> None:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    # ── TV / Radio support bar chart (Support_1 within TV+Radio) ──────────
+    # ── Saisonnalité — spend by month (Mois × Tarif Final) ────────────────
     with c2:
-        st.markdown("#### 📡 TV & Radio supports")
-        tv_radio = fdf[fdf["Media"].isin(["Tv", "TV", "Radio"])]
-        sup = (tv_radio.groupby("Support_1", dropna=True)
-               .agg(**{"Tarif Final": ("Tarif Final", "sum"),
-                       "GRP": ("GRP", "sum")})
-               .reset_index().sort_values("Tarif Final", ascending=True))
-        sup = sup[sup["Tarif Final"] > 0]
-        if sup.empty:
-            st.caption("No TV/Radio supports for the current selection.")
+        st.markdown("#### 📆 Saisonnalité — spend by month")
+        if "Mois" not in fdf.columns:
+            st.caption("Column `Mois` is missing in the Excel.")
         else:
-            fig = px.bar(
-                sup, x="Tarif Final", y="Support_1", orientation="h",
-                color="Tarif Final",
-                color_continuous_scale=["#6366F1", "#A78BFA", "#EC4899"],
-                custom_data=["GRP"],
-            )
-            fig.update_traces(
-                marker=dict(line=dict(width=0)),
-                hovertemplate=(
-                    "<b>%{y}</b><br>"
-                    "Tarif Final : %{x:,.0f} TND<br>"
-                    "GRP : %{customdata[0]:,.2f}"
-                    "<extra></extra>"
-                ),
-            )
-            fig.update_layout(
-                height=max(420, 22 * len(sup)),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#F5F3FF"),
-                xaxis=dict(gridcolor="rgba(167,139,250,0.15)", title=""),
-                yaxis=dict(title=""),
-                margin=dict(t=20, b=20, l=10, r=10),
-                coloraxis_showscale=False,
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+            saison = (fdf.dropna(subset=["Mois"])
+                      .assign(_m=lambda d: pd.to_numeric(d["Mois"], errors="coerce"))
+                      .dropna(subset=["_m"])
+                      .assign(_m=lambda d: d["_m"].astype(int))
+                      .groupby("_m", as_index=False)["Tarif Final"].sum()
+                      .sort_values("_m"))
+            saison = saison[saison["Tarif Final"] > 0]
+            if saison.empty:
+                st.caption("No spend recorded by month.")
+            else:
+                saison["Mois"] = saison["_m"].apply(
+                    lambda m: month_names[m - 1] if 1 <= m <= 12 else str(m)
+                )
+                fig = px.bar(
+                    saison, x="Mois", y="Tarif Final",
+                    color="Tarif Final",
+                    color_continuous_scale=["#6366F1", "#A78BFA", "#EC4899"],
+                    text="Tarif Final",
+                )
+                fig.update_traces(
+                    texttemplate="%{text:,.0f}",
+                    textposition="outside",
+                    marker=dict(line=dict(width=0)),
+                    hovertemplate=(
+                        "<b>%{x}</b><br>Tarif Final : %{y:,.0f} TND<extra></extra>"
+                    ),
+                )
+                fig.update_layout(
+                    height=420,
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#F5F3FF"),
+                    xaxis=dict(title="", categoryorder="array",
+                               categoryarray=saison["Mois"].tolist()),
+                    yaxis=dict(gridcolor="rgba(167,139,250,0.15)", title=""),
+                    coloraxis_showscale=False,
+                    margin=dict(t=20, b=20, l=10, r=10),
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-    # ── GRP detail by Media ───────────────────────────────────────────────
-    st.markdown("#### 🎯 GRP breakdown by Media")
-    grp = (fdf.groupby("Media", dropna=True)["GRP"].sum()
-           .reset_index().sort_values("GRP", ascending=False))
-    grp = grp[grp["GRP"] > 0]
-    if grp.empty:
-        st.caption("No GRP recorded for the current selection.")
+    # ── TV / Radio support bar chart (Support_1 within TV+Radio) ──────────
+    st.markdown("#### 📡 TV & Radio supports")
+    tv_radio = fdf[fdf["Media"].isin(["Tv", "TV", "Radio"])]
+    sup = (tv_radio.groupby("Support_1", dropna=True)
+           .agg(**{"Tarif Final": ("Tarif Final", "sum"),
+                   "GRP": ("GRP", "sum")})
+           .reset_index().sort_values("Tarif Final", ascending=True))
+    sup = sup[sup["Tarif Final"] > 0]
+    if sup.empty:
+        st.caption("No TV/Radio supports for the current selection.")
     else:
         fig = px.bar(
-            grp, x="Media", y="GRP", color="Media",
-            color_discrete_sequence=MEDIA_COLOR_SEQ, text="GRP",
+            sup, x="Tarif Final", y="Support_1", orientation="h",
+            color="Tarif Final",
+            color_continuous_scale=["#6366F1", "#A78BFA", "#EC4899"],
+            custom_data=["GRP"],
         )
         fig.update_traces(
-            texttemplate="%{text:,.0f}", textposition="outside",
             marker=dict(line=dict(width=0)),
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Tarif Final : %{x:,.0f} TND<br>"
+                "GRP : %{customdata[0]:,.2f}"
+                "<extra></extra>"
+            ),
         )
         fig.update_layout(
-            height=380,
+            height=max(420, 22 * len(sup)),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#F5F3FF"),
-            xaxis=dict(title=""),
-            yaxis=dict(gridcolor="rgba(167,139,250,0.15)", title="GRP"),
-            showlegend=False,
-            margin=dict(t=10, b=10, l=10, r=10),
+            xaxis=dict(gridcolor="rgba(167,139,250,0.15)", title=""),
+            yaxis=dict(title=""),
+            margin=dict(t=20, b=20, l=10, r=10),
+            coloraxis_showscale=False,
         )
         st.plotly_chart(fig, use_container_width=True)
 
