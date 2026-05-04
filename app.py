@@ -95,57 +95,48 @@ st.markdown(
         box-shadow: 0 6px 18px rgba(139,92,246,0.35);
     }
 
-    /* Month calendar cards */
-    .month-card {
+    /* Month calendar cards = styled st.button */
+    div[data-testid="stButton"] > button[kind].month-btn,
+    .month-grid div[data-testid="stButton"] > button {
         position: relative;
-        padding: 18px 16px;
-        border-radius: 16px;
-        background: linear-gradient(160deg, rgba(26,19,48,0.95) 0%, rgba(15,11,31,0.95) 100%);
-        border: 1px solid rgba(167,139,250,0.18);
-        box-shadow: 0 6px 20px rgba(0,0,0,0.35);
-        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+        width: 100%;
         min-height: 110px;
+        padding: 18px 16px;
+        border-radius: 16px !important;
+        background: linear-gradient(160deg, rgba(26,19,48,0.95) 0%, rgba(15,11,31,0.95) 100%) !important;
+        border: 1px solid rgba(167,139,250,0.18) !important;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.35) !important;
+        color: #F5F3FF !important;
+        font-weight: 700 !important;
+        line-height: 1.35 !important;
+        white-space: pre-line !important;
+        text-align: left !important;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease !important;
+        overflow: hidden;
     }
-    .month-card::before {
+    .month-grid div[data-testid="stButton"] > button > div { width: 100%; }
+    .month-grid div[data-testid="stButton"] > button p {
+        font-size: 0.95rem !important;
+        margin: 0 !important;
+        text-align: left !important;
+    }
+    .month-grid div[data-testid="stButton"] > button::before {
         content: "";
         position: absolute; top: 0; left: 0; right: 0; height: 3px;
         border-radius: 16px 16px 0 0;
         background: linear-gradient(90deg, #8B5CF6, #A78BFA, #6366F1);
     }
-    .month-card.has-data { border-color: rgba(167,139,250,0.55); }
-    .month-card.selected {
-        border-color: #A78BFA;
-        box-shadow: 0 10px 30px rgba(139,92,246,0.45);
+    .month-grid div[data-testid="stButton"] > button:hover {
+        transform: translateY(-2px);
+        border-color: #A78BFA !important;
+        box-shadow: 0 12px 28px rgba(139,92,246,0.4) !important;
     }
-    .month-card .m-name {
-        font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        color: #C4B5FD;
-        font-weight: 600;
-    }
-    .month-card .m-count {
-        font-size: 2.1rem;
-        font-weight: 800;
-        color: #F5F3FF;
-        line-height: 1.1;
-        margin-top: 4px;
-    }
-    .month-card .m-sub {
-        font-size: 0.78rem;
-        color: rgba(245,243,255,0.6);
-        margin-top: 2px;
-    }
-
-    /* Make the invisible button overlay a clickable card */
-    div[data-testid="stButton"] > button.month-btn {
-        width: 100%;
-        height: 110px;
-        margin-top: -118px;
-        background: transparent;
-        border: none;
-        color: transparent;
-        cursor: pointer;
+    .month-grid.has-sel-1 > div:nth-child(1) div[data-testid="stButton"] > button,
+    .month-grid.has-sel-2 > div:nth-child(2) div[data-testid="stButton"] > button,
+    .month-grid.has-sel-3 > div:nth-child(3) div[data-testid="stButton"] > button,
+    .month-grid.has-sel-4 > div:nth-child(4) div[data-testid="stButton"] > button {
+        border-color: #A78BFA !important;
+        box-shadow: 0 10px 30px rgba(139,92,246,0.55) !important;
     }
 
     /* Report row card */
@@ -390,31 +381,26 @@ def render_calendar(section: str, rows: list[dict]) -> None:
 
     st.markdown(f"### 📅 {year} — monthly view")
 
-    # 4 columns × 3 rows = 12 months
+    # 4 columns × 3 rows = 12 months. Each card IS a button.
     for row_i in range(3):
+        sel = st.session_state[sel_key]
+        sel_in_row = None
+        if sel is not None:
+            row_of_sel = (sel - 1) // 4
+            if row_of_sel == row_i:
+                sel_in_row = ((sel - 1) % 4) + 1
+        sel_class = f" has-sel-{sel_in_row}" if sel_in_row else ""
+        st.markdown(f'<div class="month-grid{sel_class}">', unsafe_allow_html=True)
         cols = st.columns(4, gap="small")
         for col_i in range(4):
             month_num = row_i * 4 + col_i + 1
             month_name = MONTHS[month_num - 1]
             n = counts[month_num]
-            classes = ["month-card"]
-            if n > 0:
-                classes.append("has-data")
-            if st.session_state[sel_key] == month_num:
-                classes.append("selected")
+            sub = "report" if n == 1 else "reports"
+            label = f"{month_name.upper()}\n\n{n}  •  {sub}"
             with cols[col_i]:
-                sub = "report" if n == 1 else "reports"
-                st.markdown(
-                    f'<div class="{" ".join(classes)}">'
-                    f'<div class="m-name">{month_name}</div>'
-                    f'<div class="m-count">{n}</div>'
-                    f'<div class="m-sub">{sub}</div>'
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-                # Invisible overlay button to make the card clickable
                 if st.button(
-                    " ",
+                    label,
                     key=f"btn_{section}_{year}_{month_num}",
                     help=f"Open {month_name} {year}",
                     use_container_width=True,
@@ -423,6 +409,7 @@ def render_calendar(section: str, rows: list[dict]) -> None:
                         None if st.session_state[sel_key] == month_num else month_num
                     )
                     st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
     # Reports for the selected month
     sel = st.session_state[sel_key]
