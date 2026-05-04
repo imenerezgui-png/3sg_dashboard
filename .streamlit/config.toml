@@ -7,5 +7,6 @@ textColor = "#F5F3FF"
 font = "sans serif"
 
 [server]
-maxUploadSize = 50
+maxUploadSize = 200
+maxMessageSize = 200
 enableStaticServing = true
