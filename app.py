@@ -28,12 +28,15 @@ REPORTS_DIR = STATIC_DIR / "reports"
 INDEX_PATH = REPORTS_DIR / "index.json"
 MEDIA_DIR = STATIC_DIR / "media"
 MEDIA_MANIFEST = MEDIA_DIR / "active.json"
+PAID_DIR = STATIC_DIR / "paid"
+PAID_MANIFEST = PAID_DIR / "active.json"
 
-SECTIONS = ["Media", "Social", "Influence", "ATL", "BTL"]
+SECTIONS = ["Media", "Social", "Influence", "Paid", "ATL", "BTL"]
 SECTION_ICONS = {
     "Media": "📺",
     "Social": "💬",
     "Influence": "✨",
+    "Paid": "💸",
     "ATL": "📡",
     "BTL": "🎪",
 }
@@ -891,11 +894,358 @@ def render_media() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Paid section — Meta Ads-style global overview (inspired by Batam dashboard)
+# ---------------------------------------------------------------------------
+PAID_PLATFORM_COLORS = {
+    "FB": "#7AA8F2",     # soft Meta blue
+    "IG": "#F0A6C9",     # soft Insta pink
+    "AN": "#B6A0F2",     # soft violet (Audience Network)
+    "MSGR": "#86E4C0",   # soft mint (Messenger)
+}
+PAID_GENDER_COLORS = {
+    "female": "#F0A6C9",
+    "male":   "#7AA8F2",
+    "all":    "#B6A0F2",
+    "unknown": "#5B6478",
+}
+
+
+def _save_paid_file(file_bytes: bytes, original_name: str) -> Path:
+    PAID_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = Path(original_name).suffix.lower() or ".xlsx"
+    target = PAID_DIR / f"paid{suffix}"
+    target.write_bytes(file_bytes)
+    PAID_MANIFEST.write_text(
+        json.dumps({
+            "filename": target.name,
+            "original_name": original_name,
+            "uploaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "size_kb": round(len(file_bytes) / 1024, 1),
+        }, indent=2),
+        encoding="utf-8",
+    )
+    load_paid_df.clear()  # type: ignore[attr-defined]
+    return target
+
+
+def _active_paid_file() -> Path | None:
+    if not PAID_MANIFEST.exists():
+        return None
+    try:
+        meta = json.loads(PAID_MANIFEST.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    p = PAID_DIR / meta.get("filename", "")
+    return p if p.exists() else None
+
+
+@st.cache_data(show_spinner=False)
+def load_paid_df(path_str: str, mtime: float) -> pd.DataFrame:
+    df = pd.read_excel(path_str)
+    numeric_cols = [
+        "Montant dépensé (USD)", "Impressions", "Couverture", "Clics (tous)",
+        "Clics sur un lien", "CTR (tous)", "CTR (taux de clics sur le lien)",
+        "CPC (Tous) (USD)", "CPC (coût par clic sur un lien) (USD)",
+        "CPM (Coût pour 1 000 impressions) (USD)", "Résultats", "Répétition",
+    ]
+    for c in numeric_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in ("Genre", "plateforme", "campaign_type", "campaign_sub_type",
+              "Nom de la campagne"):
+        if c in df.columns:
+            df[c] = df[c].astype("string").str.strip()
+    if "Fin" in df.columns:
+        df["Fin"] = pd.to_datetime(df["Fin"], errors="coerce")
+    return df
+
+
+def render_paid() -> None:
+    flash_key = "flash_Paid"
+    flash = st.session_state.pop(flash_key, None)
+    if flash:
+        kind, msg = flash
+        bg = ("linear-gradient(90deg,#10B981 0%,#059669 100%)" if kind == "ok"
+              else "linear-gradient(90deg,#DC2626 0%,#B91C1C 100%)")
+        icon = "✅" if kind == "ok" else "❌"
+        st.markdown(
+            f'<div style="padding:14px 18px;border-radius:12px;background:{bg};'
+            f'color:white;font-weight:700;margin-bottom:12px;">{icon} {msg}</div>',
+            unsafe_allow_html=True,
+        )
+
+    with st.expander("⬆️  Upload / replace the Paid Media Excel", expanded=False):
+        with st.form("upload_paid", clear_on_submit=True):
+            up = st.file_uploader(
+                "Excel file (.xlsx) — Meta / paid-media export",
+                type=["xlsx", "xls"],
+                key="upl_paid",
+            )
+            submitted = st.form_submit_button(
+                "💾 Save Excel", type="primary", use_container_width=True
+            )
+            if submitted:
+                if up is None:
+                    st.session_state[flash_key] = ("err", "Please choose an Excel file first.")
+                else:
+                    try:
+                        target = _save_paid_file(up.getvalue(), up.name)
+                        st.session_state[flash_key] = (
+                            "ok",
+                            f"Paid data successfully uploaded — {target.name}",
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        st.session_state[flash_key] = ("err", f"Upload failed: {exc}")
+                st.rerun()
+
+    active = _active_paid_file()
+    if active is None:
+        st.info("No Paid Media file uploaded yet. Use the panel above to add one.")
+        return
+
+    df = load_paid_df(str(active), active.stat().st_mtime)
+
+    spend_col = "Montant dépensé (USD)"
+    if spend_col not in df.columns:
+        st.error(f"Missing required column: `{spend_col}`")
+        return
+
+    st.divider()
+
+    # ── Filters ───────────────────────────────────────────────────────────
+    f1, f2 = st.columns(2)
+    with f1:
+        genres = sorted([g for g in df["Genre"].dropna().unique() if g]) \
+            if "Genre" in df.columns else []
+        sel_g = st.multiselect(
+            "Gender", genres, default=[],
+            placeholder="All genders",
+            key="paid_genre_filter",
+        )
+    with f2:
+        plats = sorted([p for p in df["plateforme"].dropna().unique() if p]) \
+            if "plateforme" in df.columns else []
+        sel_p = st.multiselect(
+            "Platform", plats, default=[],
+            placeholder="All platforms",
+            key="paid_plat_filter",
+        )
+
+    fdf = df.copy()
+    if sel_g:
+        fdf = fdf[fdf["Genre"].isin(sel_g)]
+    if sel_p:
+        fdf = fdf[fdf["plateforme"].isin(sel_p)]
+
+    if fdf.empty:
+        st.warning("No rows match the current selection.")
+        return
+
+    # ── KPIs ──────────────────────────────────────────────────────────────
+    spend = fdf[spend_col].sum()
+    impr = fdf["Impressions"].sum() if "Impressions" in fdf else 0
+    reach = fdf["Couverture"].sum() if "Couverture" in fdf else 0
+    clicks = fdf["Clics (tous)"].sum() if "Clics (tous)" in fdf else 0
+    ctr = (clicks / impr * 100) if impr else 0
+    cpc = (spend / clicks) if clicks else 0
+    cpm = (spend / impr * 1000) if impr else 0
+
+    def _kpi(label: str, value: str) -> str:
+        return (f'<div class="kpi"><div class="label">{label}</div>'
+                f'<div class="value">{value}</div></div>')
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.markdown(_kpi("Spend (USD)", f"${spend:,.0f}"), unsafe_allow_html=True)
+    k2.markdown(_kpi("Impressions", _fmt_int(impr)), unsafe_allow_html=True)
+    k3.markdown(_kpi("Reach", _fmt_int(reach)), unsafe_allow_html=True)
+    k4.markdown(_kpi("Clicks", _fmt_int(clicks)), unsafe_allow_html=True)
+
+    k5, k6, k7, k8 = st.columns(4)
+    k5.markdown(_kpi("Avg CTR", f"{ctr:.2f}%"), unsafe_allow_html=True)
+    k6.markdown(_kpi("Avg CPC (USD)", f"${cpc:.3f}"), unsafe_allow_html=True)
+    k7.markdown(_kpi("Avg CPM (USD)", f"${cpm:.2f}"), unsafe_allow_html=True)
+    k8.markdown(_kpi("Campaigns", f'{fdf["Nom de la campagne"].nunique() if "Nom de la campagne" in fdf else 0}'),
+                unsafe_allow_html=True)
+
+    st.write("")
+
+    # ── Spend by platform donut + Spend by gender bar ─────────────────────
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### 📱 Spend by platform")
+        if "plateforme" not in fdf.columns:
+            st.caption("Column `plateforme` is missing.")
+        else:
+            plat = (fdf.groupby("plateforme", dropna=True)[spend_col].sum()
+                    .reset_index().sort_values(spend_col, ascending=False))
+            plat = plat[plat[spend_col] > 0]
+            if plat.empty:
+                st.caption("No spend recorded.")
+            else:
+                fig = px.pie(
+                    plat, names="plateforme", values=spend_col, hole=0.62,
+                    color="plateforme",
+                    color_discrete_map={p: PAID_PLATFORM_COLORS.get(p, "#B6A0F2")
+                                        for p in plat["plateforme"]},
+                )
+                fig.update_traces(
+                    textposition="outside", textinfo="label+percent",
+                    textfont=dict(color="#F5F3FF", size=13),
+                    marker=dict(line=dict(color="#0E0B1F", width=3)),
+                    pull=[0.02] * len(plat),
+                    hovertemplate="<b>%{label}</b><br>$%{value:,.0f}<br>%{percent}<extra></extra>",
+                )
+                fig.update_layout(
+                    height=420,
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#F5F3FF", family="Inter, sans-serif"),
+                    showlegend=True,
+                    legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center"),
+                    margin=dict(t=10, b=20, l=10, r=10),
+                    annotations=[dict(
+                        text=f"<b>${spend/1000:,.1f}K</b><br>"
+                             f"<span style='font-size:11px;color:#C4B5FD'>spend</span>",
+                        x=0.5, y=0.5, font=dict(size=20, color="#F5F3FF"),
+                        showarrow=False,
+                    )],
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        st.markdown("#### 👥 Spend by gender")
+        if "Genre" not in fdf.columns:
+            st.caption("Column `Genre` is missing.")
+        else:
+            gen = (fdf.groupby("Genre", dropna=True)[spend_col].sum()
+                   .reset_index().sort_values(spend_col, ascending=True))
+            gen = gen[gen[spend_col] > 0]
+            if gen.empty:
+                st.caption("No spend recorded.")
+            else:
+                fig = px.bar(
+                    gen, x=spend_col, y="Genre", orientation="h",
+                    color="Genre",
+                    color_discrete_map={g: PAID_GENDER_COLORS.get(str(g).lower(),
+                                        "#B6A0F2") for g in gen["Genre"]},
+                    text=spend_col,
+                )
+                fig.update_traces(
+                    texttemplate="$%{text:,.0f}", textposition="outside",
+                    marker=dict(line=dict(width=0), cornerradius=10),
+                    hovertemplate="<b>%{y}</b><br>$%{x:,.0f}<extra></extra>",
+                )
+                fig.update_layout(
+                    height=420,
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#F5F3FF", family="Inter, sans-serif"),
+                    xaxis=dict(gridcolor="rgba(167,139,250,0.12)", title="",
+                               tickformat="$,.0f"),
+                    yaxis=dict(title=""),
+                    showlegend=False,
+                    bargap=0.35,
+                    margin=dict(t=20, b=10, l=10, r=30),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+    # ── Top 10 campaigns by spend ─────────────────────────────────────────
+    st.markdown("#### 🏆 Top 10 campaigns by spend")
+    if "Nom de la campagne" not in fdf.columns:
+        st.caption("Column `Nom de la campagne` is missing.")
+    else:
+        agg = (fdf.groupby("Nom de la campagne", dropna=True)
+               .agg(**{
+                   "Spend": (spend_col, "sum"),
+                   "Impressions": ("Impressions", "sum") if "Impressions" in fdf else (spend_col, "size"),
+                   "Clicks": ("Clics (tous)", "sum") if "Clics (tous)" in fdf else (spend_col, "size"),
+               })
+               .reset_index()
+               .sort_values("Spend", ascending=False)
+               .head(10)
+               .sort_values("Spend", ascending=True))
+        if agg.empty:
+            st.caption("No campaigns to display.")
+        else:
+            agg["short"] = agg["Nom de la campagne"].apply(
+                lambda s: (s[:55] + "…") if len(str(s)) > 55 else s
+            )
+            fig = px.bar(
+                agg, x="Spend", y="short", orientation="h",
+                color="Spend",
+                color_continuous_scale=["#6366F1", "#A78BFA", "#F0A6C9"],
+                custom_data=["Impressions", "Clicks", "Nom de la campagne"],
+            )
+            fig.update_traces(
+                marker=dict(line=dict(width=0), cornerradius=10),
+                hovertemplate=(
+                    "<b>%{customdata[2]}</b><br>"
+                    "Spend : $%{x:,.0f}<br>"
+                    "Impressions : %{customdata[0]:,.0f}<br>"
+                    "Clicks : %{customdata[1]:,.0f}"
+                    "<extra></extra>"
+                ),
+            )
+            fig.update_layout(
+                height=max(440, 38 * len(agg)),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#F5F3FF", family="Inter, sans-serif"),
+                xaxis=dict(gridcolor="rgba(167,139,250,0.12)", title="",
+                           tickformat="$,.0f"),
+                yaxis=dict(title="", tickfont=dict(size=11)),
+                coloraxis_showscale=False,
+                bargap=0.25,
+                margin=dict(t=10, b=10, l=10, r=20),
+                hoverlabel=dict(bgcolor="#1A1330", bordercolor="#A78BFA",
+                                font=dict(color="#F5F3FF")),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    # ── Spend trend over time (Fin date) ──────────────────────────────────
+    if "Fin" in fdf.columns and fdf["Fin"].notna().any():
+        st.markdown("#### 📈 Spend over time")
+        trend = (fdf.dropna(subset=["Fin"])
+                 .assign(_d=fdf["Fin"].dt.to_period("W").dt.start_time)
+                 .groupby("_d", as_index=False)[spend_col].sum()
+                 .sort_values("_d"))
+        if not trend.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=trend["_d"], y=trend[spend_col],
+                mode="lines+markers",
+                line=dict(color="#B6A0F2", width=3, shape="spline", smoothing=0.7),
+                marker=dict(size=9, color="#F0A6C9",
+                            line=dict(width=2, color="#0E0B1F")),
+                fill="tozeroy",
+                fillcolor="rgba(182,160,242,0.18)",
+                hovertemplate="<b>Week of %{x|%b %d, %Y}</b><br>$%{y:,.0f}<extra></extra>",
+            ))
+            fig.update_layout(
+                height=380,
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#F5F3FF", family="Inter, sans-serif"),
+                xaxis=dict(title="", showgrid=False),
+                yaxis=dict(title="", gridcolor="rgba(167,139,250,0.12)",
+                           tickformat="$,.0f"),
+                margin=dict(t=20, b=20, l=10, r=10),
+                hoverlabel=dict(bgcolor="#1A1330", bordercolor="#A78BFA",
+                                font=dict(color="#F5F3FF")),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.caption(
+        f"Source: `{active.name}` — "
+        f"{len(df):,} rows • last upload {datetime.fromtimestamp(active.stat().st_mtime):%Y-%m-%d %H:%M}"
+    )
+
+
 def render_section(section: str) -> None:
     icon = SECTION_ICONS.get(section, "📁")
     st.markdown(f"## {icon} {section}")
     if section == "Media":
         render_media()
+        return
+    if section == "Paid":
+        render_paid()
         return
     upload_panel(section)
     st.divider()
