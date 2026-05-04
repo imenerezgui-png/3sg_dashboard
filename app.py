@@ -146,6 +146,13 @@ st.markdown(
         background: rgba(26,19,48,0.7);
         border: 1px solid rgba(167,139,250,0.18);
         margin-bottom: 10px;
+        transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    a.report-link { text-decoration: none !important; display: block; }
+    a.report-link:hover .report-card {
+        transform: translateY(-2px);
+        border-color: #A78BFA;
+        box-shadow: 0 10px 24px rgba(139,92,246,0.35);
     }
     .report-card .r-title { font-weight: 700; color: #F5F3FF; font-size: 1.02rem; }
     .report-card .r-meta { color: #C4B5FD; font-size: 0.85rem; margin-top: 2px; }
@@ -429,23 +436,32 @@ def render_calendar(section: str, rows: list[dict]) -> None:
         return
 
     for i, r in enumerate(month_rows):
+        file_path = APP_DIR / r["path"]
         with st.container():
-            c1, c2, c3, c4 = st.columns([4, 2, 2, 1])
+            c1, c2, c3 = st.columns([6, 2, 1])
             with c1:
-                st.markdown(
-                    f'<div class="report-card">'
-                    f'<div class="r-title">{r["event_name"]}</div>'
-                    f'<div class="r-meta">📅 {r["event_date"]}  •  🏷️ {r["brand"]}'
-                    f'  •  📄 {r["filename"]}  •  {r["size_kb"]} KB</div>'
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
+                if file_path.exists():
+                    b64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
+                    href = f"data:application/pdf;base64,{b64}"
+                    st.markdown(
+                        f'<a class="report-link" href="{href}" target="_blank" '
+                        f'rel="noopener noreferrer">'
+                        f'<div class="report-card">'
+                        f'<div class="r-title">📄 {r["event_name"]}</div>'
+                        f'<div class="r-meta">📅 {r["event_date"]}  •  🏷️ {r["brand"]}'
+                        f'  •  {r["filename"]}  •  {r["size_kb"]} KB</div>'
+                        f"</div></a>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f'<div class="report-card">'
+                        f'<div class="r-title">⚠️ {r["event_name"]} (file missing)</div>'
+                        f'<div class="r-meta">📅 {r["event_date"]}  •  🏷️ {r["brand"]}</div>'
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
             with c2:
-                view_key = f"view_{section}_{i}_{r['filename']}"
-                if st.button("👁️ Preview", key=view_key, use_container_width=True):
-                    st.session_state[f"preview_{section}"] = r["path"]
-            with c3:
-                file_path = APP_DIR / r["path"]
                 if file_path.exists():
                     st.download_button(
                         "⬇️ Download",
@@ -455,27 +471,11 @@ def render_calendar(section: str, rows: list[dict]) -> None:
                         key=f"dl_{section}_{i}_{r['filename']}",
                         use_container_width=True,
                     )
-                else:
-                    st.button("⚠️ missing", disabled=True, use_container_width=True,
-                              key=f"miss_{section}_{i}")
-            with c4:
+            with c3:
                 if st.button("🗑️", key=f"del_{section}_{i}_{r['filename']}",
                              help="Delete this report", use_container_width=True):
                     delete_report(r)
                     st.rerun()
-
-    # Preview pane
-    preview_path = st.session_state.get(f"preview_{section}")
-    if preview_path:
-        st.markdown("### 📄 Preview")
-        full = APP_DIR / preview_path
-        if full.exists():
-            pdf_preview(full)
-            if st.button("Close preview", key=f"close_prev_{section}"):
-                st.session_state.pop(f"preview_{section}", None)
-                st.rerun()
-        else:
-            st.error("File not found on disk.")
 
 
 def render_section(section: str) -> None:
