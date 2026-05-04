@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -529,6 +530,26 @@ def render_calendar(section: str, rows: list[dict]) -> None:
 MEDIA_COLOR_SEQ = ["#A78BFA", "#8B5CF6", "#6366F1", "#EC4899", "#F59E0B",
                    "#10B981", "#06B6D4", "#F472B6"]
 
+# Per-Media palette (case-insensitive lookup helper below)
+MEDIA_COLORS = {
+    "tv":         "#EC4899",  # pink
+    "radio":      "#A78BFA",  # violet
+    "affichage":  "#F59E0B",  # amber
+    "presse":     "#4B5563",  # dark grey
+    "digital":    "#06B6D4",  # cyan
+    "cinema":     "#10B981",  # green
+}
+
+
+def _media_color(name: str) -> str:
+    if not isinstance(name, str):
+        return "#A78BFA"
+    return MEDIA_COLORS.get(name.strip().lower(), "#A78BFA")
+
+
+def _media_color_map(values) -> dict:
+    return {v: _media_color(v) for v in values}
+
 
 def _save_media_file(file_bytes: bytes, original_name: str) -> Path:
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
@@ -698,30 +719,47 @@ def render_media() -> None:
             st.caption("No Tarif Final to display.")
         else:
             fig = px.pie(
-                mix, names="Media", values="Tarif Final", hole=0.5,
-                color_discrete_sequence=MEDIA_COLOR_SEQ,
+                mix, names="Media", values="Tarif Final", hole=0.62,
+                color="Media",
+                color_discrete_map=_media_color_map(mix["Media"]),
             )
             fig.update_traces(
                 textposition="outside",
                 textinfo="label+percent",
-                marker=dict(line=dict(color="rgba(15,11,31,0.9)", width=2)),
+                textfont=dict(size=13, color="#F5F3FF"),
+                marker=dict(line=dict(color="#0E0B1F", width=3)),
+                pull=[0.02] * len(mix),
+                hovertemplate=(
+                    "<b>%{label}</b><br>"
+                    "Tarif Final : %{value:,.0f} TND<br>"
+                    "Share : %{percent}<extra></extra>"
+                ),
             )
+            total = mix["Tarif Final"].sum()
             fig.update_layout(
-                height=420,
+                height=440,
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#F5F3FF"),
+                font=dict(color="#F5F3FF", family="Inter, sans-serif"),
                 showlegend=True,
-                legend=dict(orientation="h", y=-0.1),
-                margin=dict(t=20, b=20, l=10, r=10),
+                legend=dict(
+                    orientation="h", y=-0.08, x=0.5, xanchor="center",
+                    font=dict(size=12),
+                ),
+                margin=dict(t=10, b=20, l=10, r=10),
+                annotations=[dict(
+                    text=f"<b>{total/1e6:,.1f}M</b><br><span style='font-size:11px;color:#C4B5FD'>TND</span>",
+                    x=0.5, y=0.5, font=dict(size=22, color="#F5F3FF"),
+                    showarrow=False,
+                )],
             )
             st.plotly_chart(fig, use_container_width=True)
 
     # ── TV / Radio support bar chart (Support_1 within TV+Radio) ──────────
     with c2:
         st.markdown("#### 📡 TV & Radio supports")
-        tv_radio = fdf[fdf["Media"].isin(["Tv", "TV", "Radio"])]
-        sup = (tv_radio.groupby("Support_1", dropna=True)
+        tv_radio = fdf[fdf["Media"].str.lower().isin(["tv", "radio"])]
+        sup = (tv_radio.groupby(["Support_1", "Media"], dropna=True)
                .agg(**{"Tarif Final": ("Tarif Final", "sum"),
                        "GRP": ("GRP", "sum")})
                .reset_index().sort_values("Tarif Final", ascending=True))
@@ -731,28 +769,36 @@ def render_media() -> None:
         else:
             fig = px.bar(
                 sup, x="Tarif Final", y="Support_1", orientation="h",
-                color="Tarif Final",
-                color_continuous_scale=["#6366F1", "#A78BFA", "#EC4899"],
-                custom_data=["GRP"],
+                color="Media",
+                color_discrete_map=_media_color_map(sup["Media"].unique()),
+                custom_data=["GRP", "Media"],
             )
             fig.update_traces(
                 marker=dict(line=dict(width=0)),
                 hovertemplate=(
-                    "<b>%{y}</b><br>"
+                    "<b>%{y}</b>  —  %{customdata[1]}<br>"
                     "Tarif Final : %{x:,.0f} TND<br>"
                     "GRP : %{customdata[0]:,.2f}"
                     "<extra></extra>"
                 ),
             )
             fig.update_layout(
-                height=max(420, 22 * len(sup)),
+                height=max(440, 26 * len(sup)),
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#F5F3FF"),
-                xaxis=dict(gridcolor="rgba(167,139,250,0.15)", title=""),
-                yaxis=dict(title=""),
-                margin=dict(t=20, b=20, l=10, r=10),
-                coloraxis_showscale=False,
+                font=dict(color="#F5F3FF", family="Inter, sans-serif"),
+                xaxis=dict(
+                    gridcolor="rgba(167,139,250,0.12)",
+                    zerolinecolor="rgba(167,139,250,0.25)",
+                    title="", tickformat=",.0f",
+                ),
+                yaxis=dict(title="", tickfont=dict(size=11)),
+                bargap=0.25,
+                margin=dict(t=10, b=10, l=10, r=20),
+                legend=dict(orientation="h", y=1.08, x=0,
+                            title_text="", font=dict(size=12)),
+                hoverlabel=dict(bgcolor="#1A1330", bordercolor="#A78BFA",
+                                font=dict(color="#F5F3FF")),
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -777,26 +823,38 @@ def render_media() -> None:
         if saison["Tarif Final"].sum() == 0:
             st.caption("No spend recorded by month.")
         else:
-            fig = px.line(
-                saison, x="Mois", y="Tarif Final", markers=True,
-                color_discrete_sequence=["#A78BFA"],
-            )
-            fig.update_traces(
-                line=dict(width=3, shape="spline", smoothing=0.6),
-                marker=dict(size=10, line=dict(width=2, color="#0E0B1F")),
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=saison["Mois"], y=saison["Tarif Final"],
+                mode="lines+markers",
+                line=dict(color="#A78BFA", width=3, shape="spline", smoothing=0.7),
+                marker=dict(size=11, color="#EC4899",
+                            line=dict(width=2, color="#0E0B1F")),
                 fill="tozeroy",
                 fillcolor="rgba(167,139,250,0.18)",
                 hovertemplate="<b>%{x}</b><br>Tarif Final : %{y:,.0f} TND<extra></extra>",
-            )
+                name="Tarif Final",
+            ))
             fig.update_layout(
-                height=400,
+                height=420,
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#F5F3FF"),
-                xaxis=dict(title="", categoryorder="array",
-                           categoryarray=saison["Mois"].tolist()),
-                yaxis=dict(gridcolor="rgba(167,139,250,0.15)", title=""),
+                font=dict(color="#F5F3FF", family="Inter, sans-serif"),
+                xaxis=dict(
+                    title="", showgrid=False,
+                    categoryorder="array", categoryarray=saison["Mois"].tolist(),
+                    tickfont=dict(size=12),
+                ),
+                yaxis=dict(
+                    title="",
+                    gridcolor="rgba(167,139,250,0.12)",
+                    zerolinecolor="rgba(167,139,250,0.25)",
+                    tickformat=",.0f",
+                ),
                 margin=dict(t=20, b=20, l=10, r=10),
+                hoverlabel=dict(bgcolor="#1A1330", bordercolor="#A78BFA",
+                                font=dict(color="#F5F3FF")),
+                showlegend=False,
             )
             st.plotly_chart(fig, use_container_width=True)
 
