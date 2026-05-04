@@ -172,6 +172,30 @@ st.markdown(
     }
     .kpi .label { color: #C4B5FD; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.1em; }
     .kpi .value { color: #F5F3FF; font-size: 1.6rem; font-weight: 800; margin-top: 4px; }
+
+    /* Chart container — soft shadow + rounded corners + lift on hover */
+    div[data-testid="stPlotlyChart"] {
+        background: linear-gradient(160deg, rgba(26,19,48,0.55), rgba(15,11,31,0.55));
+        border: 1px solid rgba(167,139,250,0.16);
+        border-radius: 18px;
+        padding: 10px 6px 4px 6px;
+        box-shadow: 0 14px 38px rgba(0,0,0,0.45),
+                    0 0 0 1px rgba(167,139,250,0.08) inset;
+        transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+    }
+    div[data-testid="stPlotlyChart"]:hover {
+        transform: translateY(-3px);
+        border-color: rgba(167,139,250,0.32);
+        box-shadow: 0 20px 48px rgba(139,92,246,0.32),
+                    0 0 0 1px rgba(167,139,250,0.12) inset;
+    }
+    div[data-testid="stPlotlyChart"] .js-plotly-plot,
+    div[data-testid="stPlotlyChart"] .plot-container,
+    div[data-testid="stPlotlyChart"] .svg-container,
+    div[data-testid="stPlotlyChart"] .main-svg {
+        background: transparent !important;
+        border-radius: 14px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -530,21 +554,21 @@ def render_calendar(section: str, rows: list[dict]) -> None:
 MEDIA_COLOR_SEQ = ["#A78BFA", "#8B5CF6", "#6366F1", "#EC4899", "#F59E0B",
                    "#10B981", "#06B6D4", "#F472B6"]
 
-# Per-Media palette (case-insensitive lookup helper below)
+# Per-Media palette — softened to match the violet/indigo dashboard theme
 MEDIA_COLORS = {
-    "tv":         "#EC4899",  # pink
-    "radio":      "#A78BFA",  # violet
-    "affichage":  "#F59E0B",  # amber
-    "presse":     "#4B5563",  # dark grey
-    "digital":    "#06B6D4",  # cyan
-    "cinema":     "#10B981",  # green
+    "tv":         "#F0A6C9",  # soft pink
+    "radio":      "#B6A0F2",  # soft violet
+    "affichage":  "#FBC78A",  # soft amber
+    "presse":     "#5B6478",  # muted slate grey
+    "digital":    "#7DD3DC",  # soft cyan
+    "cinema":     "#86E4C0",  # soft mint
 }
 
 
 def _media_color(name: str) -> str:
     if not isinstance(name, str):
         return "#A78BFA"
-    return MEDIA_COLORS.get(name.strip().lower(), "#A78BFA")
+    return MEDIA_COLORS.get(name.strip().lower(), "#B6A0F2")
 
 
 def _media_color_map(values) -> dict:
@@ -774,7 +798,10 @@ def render_media() -> None:
                 custom_data=["GRP", "Media"],
             )
             fig.update_traces(
-                marker=dict(line=dict(width=0)),
+                marker=dict(
+                    line=dict(width=0),
+                    cornerradius=10,
+                ),
                 hovertemplate=(
                     "<b>%{y}</b>  —  %{customdata[1]}<br>"
                     "Tarif Final : %{x:,.0f} TND<br>"
