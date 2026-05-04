@@ -721,8 +721,10 @@ def render_media() -> None:
     with c2:
         st.markdown("#### 📡 TV & Radio supports")
         tv_radio = fdf[fdf["Media"].isin(["Tv", "TV", "Radio"])]
-        sup = (tv_radio.groupby("Support_1", dropna=True)["Tarif Final"]
-               .sum().reset_index().sort_values("Tarif Final", ascending=True))
+        sup = (tv_radio.groupby("Support_1", dropna=True)
+               .agg(**{"Tarif Final": ("Tarif Final", "sum"),
+                       "GRP": ("GRP", "sum")})
+               .reset_index().sort_values("Tarif Final", ascending=True))
         sup = sup[sup["Tarif Final"] > 0]
         if sup.empty:
             st.caption("No TV/Radio supports for the current selection.")
@@ -731,10 +733,16 @@ def render_media() -> None:
                 sup, x="Tarif Final", y="Support_1", orientation="h",
                 color="Tarif Final",
                 color_continuous_scale=["#6366F1", "#A78BFA", "#EC4899"],
+                custom_data=["GRP"],
             )
             fig.update_traces(
                 marker=dict(line=dict(width=0)),
-                hovertemplate="<b>%{y}</b><br>%{x:,.0f} TND<extra></extra>",
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Tarif Final : %{x:,.0f} TND<br>"
+                    "GRP : %{customdata[0]:,.2f}"
+                    "<extra></extra>"
+                ),
             )
             fig.update_layout(
                 height=max(420, 22 * len(sup)),
