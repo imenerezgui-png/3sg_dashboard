@@ -45,9 +45,11 @@ MONTHS = [
     "July", "August", "September", "October", "November", "December",
 ]
 
+LOGO_PATH = Path(__file__).parent / "3sg_logo.png"
+
 st.set_page_config(
     page_title="3SG Group — Dashboard de pilotage",
-    page_icon="📊",
+    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -1255,13 +1257,20 @@ def render_section(section: str) -> None:
 # ---------------------------------------------------------------------------
 # Header & sidebar
 # ---------------------------------------------------------------------------
-st.title("📊 Dashboard de pilotage — 3SG Group")
-st.caption(
-    "Centralised event-report archive across **Media · Social · Influence · ATL · BTL**. "
-    "Upload a PDF, attach the event date, and find it later in the monthly calendar."
-)
+_hcol1, _hcol2 = st.columns([1, 9], gap="small")
+with _hcol1:
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), width=90)
+with _hcol2:
+    st.title("Dashboard de pilotage — 3SG Group")
+    st.caption(
+        "Centralised event-report archive across **Media · Social · Influence · ATL · BTL**. "
+        "Upload a PDF, attach the event date, and find it later in the monthly calendar."
+    )
 
 with st.sidebar:
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), use_container_width=True)
     st.markdown("### 🗂️ Library")
     rows = load_index()
     st.metric("Total reports", len(rows))
