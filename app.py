@@ -14,6 +14,8 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
+import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -23,6 +25,8 @@ APP_DIR = Path(__file__).parent
 STATIC_DIR = APP_DIR / "static"
 REPORTS_DIR = STATIC_DIR / "reports"
 INDEX_PATH = REPORTS_DIR / "index.json"
+MEDIA_DIR = STATIC_DIR / "media"
+MEDIA_MANIFEST = MEDIA_DIR / "active.json"
 
 SECTIONS = ["Media", "Social", "Influence", "ATL", "BTL"]
 SECTION_ICONS = {
@@ -519,9 +523,271 @@ def render_calendar(section: str, rows: list[dict]) -> None:
                     st.rerun()
 
 
+# ---------------------------------------------------------------------------
+# Media section — Excel-driven dashboard
+# ---------------------------------------------------------------------------
+MEDIA_COLOR_SEQ = ["#A78BFA", "#8B5CF6", "#6366F1", "#EC4899", "#F59E0B",
+                   "#10B981", "#06B6D4", "#F472B6"]
+
+
+def _save_media_file(file_bytes: bytes, original_name: str) -> Path:
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = Path(original_name).suffix.lower() or ".xlsx"
+    target = MEDIA_DIR / f"plurimedias{suffix}"
+    target.write_bytes(file_bytes)
+    MEDIA_MANIFEST.write_text(
+        json.dumps({
+            "filename": target.name,
+            "original_name": original_name,
+            "uploaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "size_kb": round(len(file_bytes) / 1024, 1),
+        }, indent=2),
+        encoding="utf-8",
+    )
+    load_media_df.clear()  # type: ignore[attr-defined]
+    return target
+
+
+def _active_media_file() -> Path | None:
+    if not MEDIA_MANIFEST.exists():
+        return None
+    try:
+        meta = json.loads(MEDIA_MANIFEST.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    p = MEDIA_DIR / meta.get("filename", "")
+    return p if p.exists() else None
+
+
+@st.cache_data(show_spinner=False)
+def load_media_df(path_str: str, mtime: float) -> pd.DataFrame:
+    df = pd.read_excel(path_str)
+    # Keep only columns we use; coerce numerics
+    for col in ("Tarif Final", "GRP"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ("Annonceur", "Media", "Support_1"):
+        if col in df.columns:
+            df[col] = df[col].astype("string").str.strip()
+    return df
+
+
+def _fmt_money(v: float) -> str:
+    if pd.isna(v):
+        return "—"
+    return f"{v:,.0f} TND".replace(",", " ")
+
+
+def _fmt_int(v: float) -> str:
+    if pd.isna(v):
+        return "—"
+    return f"{int(round(v)):,}".replace(",", " ")
+
+
+def render_media() -> None:
+    # Upload panel (single active file)
+    flash_key = "flash_Media"
+    flash = st.session_state.pop(flash_key, None)
+    if flash:
+        kind, msg = flash
+        bg = ("linear-gradient(90deg,#10B981 0%,#059669 100%)" if kind == "ok"
+              else "linear-gradient(90deg,#DC2626 0%,#B91C1C 100%)")
+        icon = "✅" if kind == "ok" else "❌"
+        st.markdown(
+            f'<div style="padding:14px 18px;border-radius:12px;background:{bg};'
+            f'color:white;font-weight:700;margin-bottom:12px;">{icon} {msg}</div>',
+            unsafe_allow_html=True,
+        )
+
+    with st.expander("⬆️  Upload / replace the Plurimedia Excel", expanded=False):
+        with st.form("upload_media", clear_on_submit=True):
+            up = st.file_uploader(
+                "Excel file (.xlsx) — must contain columns: Annonceur, Media, "
+                "Support_1, Tarif Final, GRP",
+                type=["xlsx", "xls"],
+                key="upl_media",
+            )
+            submitted = st.form_submit_button(
+                "💾 Save Excel", type="primary", use_container_width=True
+            )
+            if submitted:
+                if up is None:
+                    st.session_state[flash_key] = ("err", "Please choose an Excel file first.")
+                else:
+                    try:
+                        target = _save_media_file(up.getvalue(), up.name)
+                        st.session_state[flash_key] = (
+                            "ok",
+                            f"Plurimedia data successfully uploaded — {target.name}",
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        st.session_state[flash_key] = ("err", f"Upload failed: {exc}")
+                st.rerun()
+
+    active = _active_media_file()
+    if active is None:
+        st.info("No Plurimedia file uploaded yet. Use the panel above to add one.")
+        return
+
+    df = load_media_df(str(active), active.stat().st_mtime)
+
+    required = {"Annonceur", "Media", "Support_1", "Tarif Final", "GRP"}
+    missing = required.difference(df.columns)
+    if missing:
+        st.error(f"Missing columns in Excel: {', '.join(sorted(missing))}")
+        return
+
+    st.divider()
+
+    # ── Filter: Annonceur dropdown (multi-select) ──────────────────────────
+    annonceurs = sorted([a for a in df["Annonceur"].dropna().unique() if a])
+    f1, f2 = st.columns([3, 1])
+    with f1:
+        sel = st.multiselect(
+            "Annonceur",
+            options=annonceurs,
+            default=[],
+            placeholder="All annonceurs (leave empty for total)",
+            key="media_annonceur_filter",
+        )
+    with f2:
+        st.caption(f"**{len(annonceurs)}** annonceurs available")
+
+    fdf = df if not sel else df[df["Annonceur"].isin(sel)]
+
+    if fdf.empty:
+        st.warning("No rows match the current selection.")
+        return
+
+    # ── KPIs ──────────────────────────────────────────────────────────────
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        st.markdown(
+            f'<div class="kpi"><div class="label">Total invest. (Tarif Final)</div>'
+            f'<div class="value">{_fmt_money(fdf["Tarif Final"].sum())}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with k2:
+        st.markdown(
+            f'<div class="kpi"><div class="label">Total GRP</div>'
+            f'<div class="value">{_fmt_int(fdf["GRP"].sum())}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with k3:
+        st.markdown(
+            f'<div class="kpi"><div class="label">Insertions</div>'
+            f'<div class="value">{_fmt_int(len(fdf))}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with k4:
+        st.markdown(
+            f'<div class="kpi"><div class="label">Annonceurs</div>'
+            f'<div class="value">{fdf["Annonceur"].nunique()}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    st.write("")
+
+    # ── Mix Media pie (Media × Tarif Final) ───────────────────────────────
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### 🥧 Mix Media — Tarif Final")
+        mix = (fdf.groupby("Media", dropna=True)["Tarif Final"]
+               .sum().reset_index().sort_values("Tarif Final", ascending=False))
+        if mix.empty or mix["Tarif Final"].sum() == 0:
+            st.caption("No Tarif Final to display.")
+        else:
+            fig = px.pie(
+                mix, names="Media", values="Tarif Final", hole=0.5,
+                color_discrete_sequence=MEDIA_COLOR_SEQ,
+            )
+            fig.update_traces(
+                textposition="outside",
+                textinfo="label+percent",
+                marker=dict(line=dict(color="rgba(15,11,31,0.9)", width=2)),
+            )
+            fig.update_layout(
+                height=420,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#F5F3FF"),
+                showlegend=True,
+                legend=dict(orientation="h", y=-0.1),
+                margin=dict(t=20, b=20, l=10, r=10),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    # ── TV / Radio support bar chart (Support_1 within TV+Radio) ──────────
+    with c2:
+        st.markdown("#### 📡 TV & Radio supports")
+        tv_radio = fdf[fdf["Media"].isin(["Tv", "TV", "Radio"])]
+        sup = (tv_radio.groupby("Support_1", dropna=True)["Tarif Final"]
+               .sum().reset_index().sort_values("Tarif Final", ascending=True))
+        sup = sup[sup["Tarif Final"] > 0]
+        if sup.empty:
+            st.caption("No TV/Radio supports for the current selection.")
+        else:
+            fig = px.bar(
+                sup, x="Tarif Final", y="Support_1", orientation="h",
+                color="Tarif Final",
+                color_continuous_scale=["#6366F1", "#A78BFA", "#EC4899"],
+            )
+            fig.update_traces(
+                marker=dict(line=dict(width=0)),
+                hovertemplate="<b>%{y}</b><br>%{x:,.0f} TND<extra></extra>",
+            )
+            fig.update_layout(
+                height=max(420, 22 * len(sup)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#F5F3FF"),
+                xaxis=dict(gridcolor="rgba(167,139,250,0.15)", title=""),
+                yaxis=dict(title=""),
+                margin=dict(t=20, b=20, l=10, r=10),
+                coloraxis_showscale=False,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    # ── GRP detail by Media ───────────────────────────────────────────────
+    st.markdown("#### 🎯 GRP breakdown by Media")
+    grp = (fdf.groupby("Media", dropna=True)["GRP"].sum()
+           .reset_index().sort_values("GRP", ascending=False))
+    grp = grp[grp["GRP"] > 0]
+    if grp.empty:
+        st.caption("No GRP recorded for the current selection.")
+    else:
+        fig = px.bar(
+            grp, x="Media", y="GRP", color="Media",
+            color_discrete_sequence=MEDIA_COLOR_SEQ, text="GRP",
+        )
+        fig.update_traces(
+            texttemplate="%{text:,.0f}", textposition="outside",
+            marker=dict(line=dict(width=0)),
+        )
+        fig.update_layout(
+            height=380,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#F5F3FF"),
+            xaxis=dict(title=""),
+            yaxis=dict(gridcolor="rgba(167,139,250,0.15)", title="GRP"),
+            showlegend=False,
+            margin=dict(t=10, b=10, l=10, r=10),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.caption(
+        f"Source: `{active.name}` — "
+        f"{len(df):,} rows • last upload {datetime.fromtimestamp(active.stat().st_mtime):%Y-%m-%d %H:%M}"
+    )
+
+
 def render_section(section: str) -> None:
     icon = SECTION_ICONS.get(section, "📁")
     st.markdown(f"## {icon} {section}")
+    if section == "Media":
+        render_media()
+        return
     upload_panel(section)
     st.divider()
     render_calendar(section, load_index())
