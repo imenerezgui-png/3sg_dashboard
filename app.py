@@ -20,7 +20,8 @@ import streamlit as st
 # Config & paths
 # ---------------------------------------------------------------------------
 APP_DIR = Path(__file__).parent
-REPORTS_DIR = APP_DIR / "reports"
+STATIC_DIR = APP_DIR / "static"
+REPORTS_DIR = STATIC_DIR / "reports"
 INDEX_PATH = REPORTS_DIR / "index.json"
 
 SECTIONS = ["Media", "Social", "Influence", "ATL", "BTL"]
@@ -437,12 +438,18 @@ def render_calendar(section: str, rows: list[dict]) -> None:
 
     for i, r in enumerate(month_rows):
         file_path = APP_DIR / r["path"]
+        # Build a URL served by Streamlit's static file server.
+        # r["path"] is like "static/reports/BTL/foo.pdf"; the URL becomes
+        # "app/static/reports/BTL/foo.pdf" (relative to the app root).
+        rel_url = r["path"]
+        if rel_url.startswith("static/"):
+            href = "app/" + rel_url
+        else:
+            href = rel_url
         with st.container():
             c1, c2, c3 = st.columns([6, 2, 1])
             with c1:
                 if file_path.exists():
-                    b64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
-                    href = f"data:application/pdf;base64,{b64}"
                     st.markdown(
                         f'<a class="report-link" href="{href}" target="_blank" '
                         f'rel="noopener noreferrer">'
