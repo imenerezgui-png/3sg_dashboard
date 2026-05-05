@@ -9,14 +9,18 @@ filed in that month.
 from __future__ import annotations
 
 import base64
+import io
 import json
 import re
+import tempfile
 from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -53,6 +57,89 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ---------------------------------------------------------------------------
+# Supabase Storage (persistent backend)
+# ---------------------------------------------------------------------------
+def _sb_cfg() -> tuple[str | None, str | None, str]:
+    """Return (url, key, bucket) from Streamlit secrets, or (None, None, ...)."""
+    try:
+        cfg = st.secrets["supabase"]
+        return cfg["url"].rstrip("/"), cfg["service_key"], cfg.get("bucket", "3sg-reports")
+    except Exception:
+        return None, None, "3sg-reports"
+
+
+SB_URL, SB_KEY, SB_BUCKET = _sb_cfg()
+SB_ENABLED = bool(SB_URL and SB_KEY)
+
+
+def _sb_headers(extra: dict | None = None) -> dict:
+    h = {"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}"}
+    if extra:
+        h.update(extra)
+    return h
+
+
+def sb_upload(remote_path: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+    """Upload (or overwrite) data to a path inside the bucket."""
+    if not SB_ENABLED:
+        raise RuntimeError("Supabase is not configured (missing secrets).")
+    url = f"{SB_URL}/storage/v1/object/{SB_BUCKET}/{quote(remote_path)}"
+    r = requests.post(
+        url,
+        headers=_sb_headers({
+            "Content-Type": content_type,
+            "x-upsert": "true",
+            "cache-control": "3600",
+        }),
+        data=data,
+        timeout=120,
+    )
+    if not r.ok:
+        raise RuntimeError(f"Supabase upload failed ({r.status_code}): {r.text}")
+
+
+def sb_download(remote_path: str) -> bytes | None:
+    """Download bytes from the bucket. Returns None if not found."""
+    if not SB_ENABLED:
+        return None
+    url = f"{SB_URL}/storage/v1/object/{SB_BUCKET}/{quote(remote_path)}"
+    r = requests.get(url, headers=_sb_headers(), timeout=120)
+    if r.status_code == 404:
+        return None
+    if not r.ok:
+        raise RuntimeError(f"Supabase download failed ({r.status_code}): {r.text}")
+    return r.content
+
+
+def sb_delete(remote_path: str) -> None:
+    if not SB_ENABLED:
+        return
+    url = f"{SB_URL}/storage/v1/object/{SB_BUCKET}/{quote(remote_path)}"
+    requests.delete(url, headers=_sb_headers(), timeout=30)
+
+
+def sb_public_url(remote_path: str) -> str:
+    return f"{SB_URL}/storage/v1/object/public/{SB_BUCKET}/{quote(remote_path)}"
+
+
+def sb_get_json(remote_path: str, default):
+    raw = sb_download(remote_path)
+    if raw is None:
+        return default
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return default
+
+
+def sb_put_json(remote_path: str, obj) -> None:
+    sb_upload(
+        remote_path,
+        json.dumps(obj, indent=2, ensure_ascii=False).encode("utf-8"),
+        content_type="application/json",
+    )
 
 # ---------------------------------------------------------------------------
 # CSS — dark violet theme reused from the Batam dashboard
@@ -207,9 +294,14 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------------------
-# Storage helpers
+# Storage helpers (Supabase-backed with local fallback)
 # ---------------------------------------------------------------------------
+INDEX_REMOTE = "index.json"
+
+
 def load_index() -> list[dict]:
+    if SB_ENABLED:
+        return sb_get_json(INDEX_REMOTE, default=[])
     if not INDEX_PATH.exists():
         return []
     try:
@@ -219,6 +311,10 @@ def load_index() -> list[dict]:
 
 
 def save_index(rows: list[dict]) -> None:
+    if SB_ENABLED:
+        sb_put_json(INDEX_REMOTE, rows)
+        return
+    INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
     INDEX_PATH.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
@@ -235,44 +331,63 @@ def save_report(
     file_bytes: bytes,
     original_name: str,
 ) -> dict:
-    section_dir = REPORTS_DIR / section
-    section_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{event_date.isoformat()}_{slugify(event_name)}"
     suffix = Path(original_name).suffix.lower() or ".pdf"
-    target = section_dir / f"{stem}{suffix}"
+    base_name = f"{stem}{suffix}"
+
+    rows = load_index()
+    existing_paths = {r.get("path", "") for r in rows}
+
     # Avoid overwriting
     n = 1
-    while target.exists():
+    candidate = base_name
+    while f"reports/{section}/{candidate}" in existing_paths:
         n += 1
-        target = section_dir / f"{stem}-{n}{suffix}"
-    target.write_bytes(file_bytes)
+        candidate = f"{stem}-{n}{suffix}"
+
+    remote_path = f"reports/{section}/{candidate}"
+
+    if SB_ENABLED:
+        sb_upload(remote_path, file_bytes, content_type="application/pdf")
+        public_url = sb_public_url(remote_path)
+    else:
+        section_dir = REPORTS_DIR / section
+        section_dir.mkdir(parents=True, exist_ok=True)
+        (section_dir / candidate).write_bytes(file_bytes)
+        public_url = f"app/static/{remote_path}"  # legacy local mode
 
     row = {
         "section": section,
         "event_date": event_date.isoformat(),
         "event_name": event_name.strip(),
         "brand": brand.strip(),
-        "filename": target.name,
-        "path": str(target.relative_to(APP_DIR)).replace("\\", "/"),
+        "filename": candidate,
+        "path": remote_path,
+        "url": public_url,
         "original_name": original_name,
         "size_kb": round(len(file_bytes) / 1024, 1),
         "uploaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
     }
-    rows = load_index()
     rows.append(row)
     save_index(rows)
     return row
 
 
 def delete_report(row: dict) -> None:
-    p = APP_DIR / row["path"]
-    try:
-        if p.exists():
-            p.unlink()
-    except OSError:
-        pass
+    if SB_ENABLED:
+        try:
+            sb_delete(row["path"])
+        except Exception:
+            pass
+    else:
+        legacy = APP_DIR / "static" / row["path"]
+        try:
+            if legacy.exists():
+                legacy.unlink()
+        except OSError:
+            pass
     rows = [r for r in load_index() if not (
-        r["path"] == row["path"] and r["uploaded_at"] == row["uploaded_at"]
+        r.get("path") == row.get("path") and r.get("uploaded_at") == row.get("uploaded_at")
     )]
     save_index(rows)
 
@@ -505,19 +620,16 @@ def render_calendar(section: str, rows: list[dict]) -> None:
         return
 
     for i, r in enumerate(month_rows):
-        file_path = APP_DIR / r["path"]
-        # Build a URL served by Streamlit's static file server.
-        # r["path"] is like "static/reports/BTL/foo.pdf"; the URL becomes
-        # "app/static/reports/BTL/foo.pdf" (relative to the app root).
-        rel_url = r["path"]
-        if rel_url.startswith("static/"):
-            href = "app/" + rel_url
-        else:
-            href = rel_url
+        # Public URL (Supabase) or legacy app/static URL
+        href = r.get("url") or (
+            "app/static/" + r["path"] if r.get("path", "").startswith("reports/")
+            else r.get("path", "")
+        )
+        file_exists = bool(href)
         with st.container():
             c1, c2, c3 = st.columns([6, 2, 1])
             with c1:
-                if file_path.exists():
+                if file_exists:
                     st.markdown(
                         f'<a class="report-link" href="{href}" target="_blank" '
                         f'rel="noopener noreferrer">'
@@ -537,13 +649,9 @@ def render_calendar(section: str, rows: list[dict]) -> None:
                         unsafe_allow_html=True,
                     )
             with c2:
-                if file_path.exists():
-                    st.download_button(
-                        "⬇️ Download",
-                        data=file_path.read_bytes(),
-                        file_name=r["original_name"],
-                        mime="application/pdf",
-                        key=f"dl_{section}_{i}_{r['filename']}",
+                if file_exists:
+                    st.link_button(
+                        "⬇️ Download", href,
                         use_container_width=True,
                     )
             with c3:
@@ -580,39 +688,53 @@ def _media_color_map(values) -> dict:
     return {v: _media_color(v) for v in values}
 
 
-def _save_media_file(file_bytes: bytes, original_name: str) -> Path:
-    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+MEDIA_REMOTE_DIR = "media"
+MEDIA_MANIFEST_REMOTE = f"{MEDIA_REMOTE_DIR}/active.json"
+
+
+def _save_media_file(file_bytes: bytes, original_name: str) -> str:
     suffix = Path(original_name).suffix.lower() or ".xlsx"
-    target = MEDIA_DIR / f"plurimedias{suffix}"
-    target.write_bytes(file_bytes)
-    MEDIA_MANIFEST.write_text(
-        json.dumps({
-            "filename": target.name,
-            "original_name": original_name,
-            "uploaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-            "size_kb": round(len(file_bytes) / 1024, 1),
-        }, indent=2),
-        encoding="utf-8",
-    )
+    remote_path = f"{MEDIA_REMOTE_DIR}/plurimedias{suffix}"
+    meta = {
+        "filename": Path(remote_path).name,
+        "path": remote_path,
+        "original_name": original_name,
+        "uploaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "size_kb": round(len(file_bytes) / 1024, 1),
+    }
+    if SB_ENABLED:
+        sb_upload(remote_path, file_bytes,
+                  content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        sb_put_json(MEDIA_MANIFEST_REMOTE, meta)
+    else:
+        MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        (MEDIA_DIR / Path(remote_path).name).write_bytes(file_bytes)
+        MEDIA_MANIFEST.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     load_media_df.clear()  # type: ignore[attr-defined]
-    return target
+    return remote_path
 
 
-def _active_media_file() -> Path | None:
+def _active_media_meta() -> dict | None:
+    if SB_ENABLED:
+        meta = sb_get_json(MEDIA_MANIFEST_REMOTE, default=None)
+        return meta
     if not MEDIA_MANIFEST.exists():
         return None
     try:
-        meta = json.loads(MEDIA_MANIFEST.read_text(encoding="utf-8"))
+        return json.loads(MEDIA_MANIFEST.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
-    p = MEDIA_DIR / meta.get("filename", "")
-    return p if p.exists() else None
 
 
 @st.cache_data(show_spinner=False)
-def load_media_df(path_str: str, mtime: float) -> pd.DataFrame:
-    df = pd.read_excel(path_str)
-    # Keep only columns we use; coerce numerics
+def load_media_df(remote_path: str, version: str) -> pd.DataFrame:
+    if SB_ENABLED:
+        raw = sb_download(remote_path)
+        if raw is None:
+            return pd.DataFrame()
+        df = pd.read_excel(io.BytesIO(raw))
+    else:
+        df = pd.read_excel(MEDIA_DIR / Path(remote_path).name)
     for col in ("Tarif Final", "GRP"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -668,18 +790,18 @@ def render_media() -> None:
                         target = _save_media_file(up.getvalue(), up.name)
                         st.session_state[flash_key] = (
                             "ok",
-                            f"Plurimedia data successfully uploaded — {target.name}",
+                            f"Plurimedia data successfully uploaded — {Path(target).name}",
                         )
                     except Exception as exc:  # pragma: no cover
                         st.session_state[flash_key] = ("err", f"Upload failed: {exc}")
                 st.rerun()
 
-    active = _active_media_file()
+    active = _active_media_meta()
     if active is None:
         st.info("No Plurimedia file uploaded yet. Use the panel above to add one.")
         return
 
-    df = load_media_df(str(active), active.stat().st_mtime)
+    df = load_media_df(active["path"], active["uploaded_at"])
 
     required = {"Annonceur", "Media", "Support_1", "Tarif Final", "GRP"}
     missing = required.difference(df.columns)
@@ -891,8 +1013,8 @@ def render_media() -> None:
             st.plotly_chart(fig, use_container_width=True)
 
     st.caption(
-        f"Source: `{active.name}` — "
-        f"{len(df):,} rows • last upload {datetime.fromtimestamp(active.stat().st_mtime):%Y-%m-%d %H:%M}"
+        f"Source: `{Path(active['path']).name}` — "
+        f"{len(df):,} rows • last upload {active['uploaded_at']}"
     )
 
 
@@ -913,38 +1035,52 @@ PAID_GENDER_COLORS = {
 }
 
 
-def _save_paid_file(file_bytes: bytes, original_name: str) -> Path:
-    PAID_DIR.mkdir(parents=True, exist_ok=True)
+PAID_REMOTE_DIR = "paid"
+PAID_MANIFEST_REMOTE = f"{PAID_REMOTE_DIR}/active.json"
+
+
+def _save_paid_file(file_bytes: bytes, original_name: str) -> str:
     suffix = Path(original_name).suffix.lower() or ".xlsx"
-    target = PAID_DIR / f"paid{suffix}"
-    target.write_bytes(file_bytes)
-    PAID_MANIFEST.write_text(
-        json.dumps({
-            "filename": target.name,
-            "original_name": original_name,
-            "uploaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-            "size_kb": round(len(file_bytes) / 1024, 1),
-        }, indent=2),
-        encoding="utf-8",
-    )
+    remote_path = f"{PAID_REMOTE_DIR}/paid{suffix}"
+    meta = {
+        "filename": Path(remote_path).name,
+        "path": remote_path,
+        "original_name": original_name,
+        "uploaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "size_kb": round(len(file_bytes) / 1024, 1),
+    }
+    if SB_ENABLED:
+        sb_upload(remote_path, file_bytes,
+                  content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        sb_put_json(PAID_MANIFEST_REMOTE, meta)
+    else:
+        PAID_DIR.mkdir(parents=True, exist_ok=True)
+        (PAID_DIR / Path(remote_path).name).write_bytes(file_bytes)
+        PAID_MANIFEST.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     load_paid_df.clear()  # type: ignore[attr-defined]
-    return target
+    return remote_path
 
 
-def _active_paid_file() -> Path | None:
+def _active_paid_meta() -> dict | None:
+    if SB_ENABLED:
+        return sb_get_json(PAID_MANIFEST_REMOTE, default=None)
     if not PAID_MANIFEST.exists():
         return None
     try:
-        meta = json.loads(PAID_MANIFEST.read_text(encoding="utf-8"))
+        return json.loads(PAID_MANIFEST.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
-    p = PAID_DIR / meta.get("filename", "")
-    return p if p.exists() else None
 
 
 @st.cache_data(show_spinner=False)
-def load_paid_df(path_str: str, mtime: float) -> pd.DataFrame:
-    df = pd.read_excel(path_str)
+def load_paid_df(remote_path: str, version: str) -> pd.DataFrame:
+    if SB_ENABLED:
+        raw = sb_download(remote_path)
+        if raw is None:
+            return pd.DataFrame()
+        df = pd.read_excel(io.BytesIO(raw))
+    else:
+        df = pd.read_excel(PAID_DIR / Path(remote_path).name)
     numeric_cols = [
         "Montant dépensé (USD)", "Impressions", "Couverture", "Clics (tous)",
         "Clics sur un lien", "CTR (tous)", "CTR (taux de clics sur le lien)",
@@ -995,18 +1131,18 @@ def render_paid() -> None:
                         target = _save_paid_file(up.getvalue(), up.name)
                         st.session_state[flash_key] = (
                             "ok",
-                            f"Paid data successfully uploaded — {target.name}",
+                            f"Paid data successfully uploaded — {Path(target).name}",
                         )
                     except Exception as exc:  # pragma: no cover
                         st.session_state[flash_key] = ("err", f"Upload failed: {exc}")
                 st.rerun()
 
-    active = _active_paid_file()
+    active = _active_paid_meta()
     if active is None:
         st.info("No Paid Media file uploaded yet. Use the panel above to add one.")
         return
 
-    df = load_paid_df(str(active), active.stat().st_mtime)
+    df = load_paid_df(active["path"], active["uploaded_at"])
 
     spend_col = "Montant dépensé (USD)"
     if spend_col not in df.columns:
@@ -1235,8 +1371,8 @@ def render_paid() -> None:
             st.plotly_chart(fig, use_container_width=True)
 
     st.caption(
-        f"Source: `{active.name}` — "
-        f"{len(df):,} rows • last upload {datetime.fromtimestamp(active.stat().st_mtime):%Y-%m-%d %H:%M}"
+        f"Source: `{Path(active['path']).name}` — "
+        f"{len(df):,} rows • last upload {active['uploaded_at']}"
     )
 
 
