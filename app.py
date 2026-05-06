@@ -1252,7 +1252,7 @@ def render_paid() -> None:
             fig.update_traces(
                 texttemplate="%{text:,.0f}", textposition="outside",
                 marker=dict(line=dict(width=0), cornerradius=8),
-                hovertemplate="<b>%{x}</b> — %{data.name}<br>%{y:,.0f}<extra></extra>",
+                hovertemplate="<b>%{x}</b><br>%{y:,.0f}<extra></extra>",
             )
             fig.update_layout(
                 height=420,
@@ -1294,13 +1294,28 @@ def render_paid() -> None:
             agg["short"] = agg["Campaign name"].apply(
                 lambda s: (s[:60] + "…") if len(str(s)) > 60 else s
             )
-            custom = [agg[c].values if c in agg.columns else [0]*len(agg)
-                      for c in ("Reach", "Clicks", "Engagements")]
+            # Ensure custom_data columns exist (fill 0 if missing)
+            for _c in ("Reach", "Clicks", "Engagements"):
+                if _c not in agg.columns:
+                    agg[_c] = 0
+            # Disambiguate identical short labels (Plotly groups bars with same y)
+            agg["short"] = [f"{s}  " * (i % 1 + 1) if False else s
+                            for i, s in enumerate(agg["short"])]
+            seen: dict = {}
+            uniq = []
+            for s in agg["short"]:
+                if s in seen:
+                    seen[s] += 1
+                    uniq.append(f"{s} ({seen[s]})")
+                else:
+                    seen[s] = 0
+                    uniq.append(s)
+            agg["short"] = uniq
             fig = px.bar(
                 agg, x="Impressions", y="short", orientation="h",
                 color="Impressions",
                 color_continuous_scale=["#6366F1", "#A78BFA", "#F0A6C9"],
-                custom_data=list(zip(*custom)) if custom[0] is not None else None,
+                custom_data=["Reach", "Clicks", "Engagements"],
             )
             fig.update_traces(
                 marker=dict(line=dict(width=0), cornerradius=10),
