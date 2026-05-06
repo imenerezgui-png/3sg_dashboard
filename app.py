@@ -1269,38 +1269,71 @@ def render_paid() -> None:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    # ── Top campaigns by Impressions ──────────────────────────────────────
+    # ── Top campaigns by selected metric ─────────────────────────────────
     st.markdown("#### 🏆 Campaigns overview")
     if "Campaign name" not in fdf.columns:
         st.caption("Column `Campaign name` is missing.")
     else:
+        # Map of friendly metric label -> source column in fdf
+        METRIC_OPTIONS = {
+            "Impressions":         "Impressions",
+            "Reach":               "Reach",
+            "Clicks":              "Clicks (all)",
+            "Post engagements":    "Post engagements",
+            "ThruPlays":           "ThruPlays",
+            "Facebook likes":      "Facebook likes",
+            "IG profile visits":   "Instagram profile visits",
+            "Avg CTR (%)":         "CTR (all)",
+        }
+        available = {lbl: col for lbl, col in METRIC_OPTIONS.items() if col in fdf.columns}
+        if not available:
+            st.caption("No metric columns available.")
+            return
+
+        col_a, col_b = st.columns([2, 1])
+        with col_a:
+            sel_metric = st.selectbox(
+                "Rank campaigns by",
+                options=list(available.keys()),
+                index=0,
+                key="paid_campaigns_metric",
+            )
+        with col_b:
+            top_n = st.slider("Top N", min_value=5, max_value=25, value=12, step=1,
+                              key="paid_campaigns_topn")
+
+        metric_col = available[sel_metric]
+        is_ctr = sel_metric == "Avg CTR (%)"
+        agg_func = "mean" if is_ctr else "sum"
+
         agg_cols = {
             "Impressions": ("Impressions", "sum"),
             "Reach":       ("Reach", "sum"),
             "Clicks":      ("Clicks (all)", "sum"),
             "Engagements": ("Post engagements", "sum"),
         }
-        # only include cols that exist
         agg_cols = {k: v for k, v in agg_cols.items() if v[0] in fdf.columns}
+        agg_cols["_metric"] = (metric_col, agg_func)
+
         agg = (fdf.groupby("Campaign name", dropna=True)
                .agg(**agg_cols)
                .reset_index()
-               .sort_values("Impressions", ascending=False)
-               .head(12)
-               .sort_values("Impressions", ascending=True))
+               .sort_values("_metric", ascending=False)
+               .head(top_n)
+               .sort_values("_metric", ascending=True))
+
+        if is_ctr:
+            agg["_metric"] = agg["_metric"] * 100  # to %
+
         if agg.empty:
             st.caption("No campaigns to display.")
         else:
             agg["short"] = agg["Campaign name"].apply(
                 lambda s: (s[:60] + "…") if len(str(s)) > 60 else s
             )
-            # Ensure custom_data columns exist (fill 0 if missing)
-            for _c in ("Reach", "Clicks", "Engagements"):
+            for _c in ("Reach", "Clicks", "Engagements", "Impressions"):
                 if _c not in agg.columns:
                     agg[_c] = 0
-            # Disambiguate identical short labels (Plotly groups bars with same y)
-            agg["short"] = [f"{s}  " * (i % 1 + 1) if False else s
-                            for i, s in enumerate(agg["short"])]
             seen: dict = {}
             uniq = []
             for s in agg["short"]:
@@ -1311,20 +1344,27 @@ def render_paid() -> None:
                     seen[s] = 0
                     uniq.append(s)
             agg["short"] = uniq
+
+            value_fmt = ".2f" if is_ctr else ",.0f"
+            tick_fmt = ".2f" if is_ctr else ",.0f"
+            x_title = sel_metric
+
             fig = px.bar(
-                agg, x="Impressions", y="short", orientation="h",
-                color="Impressions",
+                agg, x="_metric", y="short", orientation="h",
+                color="_metric",
                 color_continuous_scale=["#6366F1", "#A78BFA", "#F0A6C9"],
-                custom_data=["Reach", "Clicks", "Engagements"],
+                custom_data=["Impressions", "Reach", "Clicks", "Engagements"],
             )
             fig.update_traces(
                 marker=dict(line=dict(width=0), cornerradius=10),
                 hovertemplate=(
                     "<b>%{y}</b><br>"
-                    "Impressions : %{x:,.0f}<br>"
-                    "Reach : %{customdata[0]:,.0f}<br>"
-                    "Clicks : %{customdata[1]:,.0f}<br>"
-                    "Engagements : %{customdata[2]:,.0f}"
+                    f"{sel_metric} : %{{x:{value_fmt}}}"
+                    + ("%" if is_ctr else "") + "<br>"
+                    "Impressions : %{customdata[0]:,.0f}<br>"
+                    "Reach : %{customdata[1]:,.0f}<br>"
+                    "Clicks : %{customdata[2]:,.0f}<br>"
+                    "Engagements : %{customdata[3]:,.0f}"
                     "<extra></extra>"
                 ),
             )
@@ -1332,7 +1372,8 @@ def render_paid() -> None:
                 height=max(460, 42 * len(agg)),
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#F5F3FF", family="Inter, sans-serif"),
-                xaxis=dict(gridcolor="rgba(167,139,250,0.12)", title="Impressions"),
+                xaxis=dict(gridcolor="rgba(167,139,250,0.12)",
+                           title=x_title, tickformat=tick_fmt),
                 yaxis=dict(title="", tickfont=dict(size=11)),
                 coloraxis_showscale=False,
                 bargap=0.22,
