@@ -800,6 +800,77 @@ def _fmt_int(v: float) -> str:
     return f"{int(round(v)):,}".replace(",", " ")
 
 
+_MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun",
+                "Jul","Aug","Sep","Oct","Nov","Dec"]
+
+
+def _derive_year_month(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Return (year_series, month_series) of ints derived from the dataframe.
+
+    Looks for explicit ``Année``/``Annee``/``Year`` and ``Mois``/``Month`` columns,
+    otherwise tries to derive from any datetime column found
+    (``Reporting starts``, ``Date``, ``Fin``…). Missing values come back as NaN.
+    """
+    year = pd.Series([pd.NA] * len(df), index=df.index, dtype="Float64")
+    month = pd.Series([pd.NA] * len(df), index=df.index, dtype="Float64")
+
+    for c in ("Année", "Annee", "Year", "year"):
+        if c in df.columns:
+            year = pd.to_numeric(df[c], errors="coerce")
+            break
+    for c in ("Mois", "Month", "month"):
+        if c in df.columns:
+            month = pd.to_numeric(df[c], errors="coerce")
+            break
+
+    if year.isna().all() or month.isna().all():
+        for c in ("Reporting starts", "Reporting ends", "Date", "Fin", "Début", "Debut"):
+            if c in df.columns:
+                d = pd.to_datetime(df[c], errors="coerce")
+                if year.isna().all():
+                    year = d.dt.year.astype("Float64")
+                if month.isna().all():
+                    month = d.dt.month.astype("Float64")
+                break
+    return year, month
+
+
+def _year_month_filters(df: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
+    """Render Year + Month multiselects in two columns and return filtered df."""
+    year_s, month_s = _derive_year_month(df)
+    fdf = df
+
+    years = sorted({int(y) for y in year_s.dropna().tolist()})
+    months = sorted({int(m) for m in month_s.dropna().tolist() if 1 <= int(m) <= 12})
+
+    cy, cm = st.columns(2)
+    with cy:
+        if years:
+            sel_y = st.multiselect(
+                "Year", options=years, default=[],
+                placeholder="All years",
+                key=f"{key_prefix}_year_filter",
+            )
+            if sel_y:
+                fdf = fdf[year_s.isin(sel_y)]
+        else:
+            st.caption("_No year column found_")
+    with cm:
+        if months:
+            month_labels = {m: _MONTH_NAMES[m - 1] for m in months}
+            sel_m = st.multiselect(
+                "Month", options=months, default=[],
+                format_func=lambda m: month_labels.get(m, str(m)),
+                placeholder="All months",
+                key=f"{key_prefix}_month_filter",
+            )
+            if sel_m:
+                fdf = fdf[month_s.loc[fdf.index].isin(sel_m)]
+        else:
+            st.caption("_No month column found_")
+    return fdf
+
+
 def _render_insight_cards(title: str, items: list[dict]) -> None:
     """Render a row of styled insight cards.
 
@@ -901,9 +972,9 @@ def render_media() -> None:
 
     st.divider()
 
-    # ── Filter: Annonceur dropdown (multi-select) ──────────────────────────
+    # ── Filters: Annonceur + Year + Month ─────────────────────────────────
     annonceurs = sorted([a for a in df["Annonceur"].dropna().unique() if a])
-    f1, f2 = st.columns([3, 1])
+    f1, f2, f3 = st.columns([2, 1, 1])
     with f1:
         sel = st.multiselect(
             "Annonceur",
@@ -912,10 +983,31 @@ def render_media() -> None:
             placeholder="All annonceurs (leave empty for total)",
             key="media_annonceur_filter",
         )
+    year_s, month_s = _derive_year_month(df)
+    years = sorted({int(y) for y in year_s.dropna().tolist()})
+    months = sorted({int(m) for m in month_s.dropna().tolist() if 1 <= int(m) <= 12})
     with f2:
-        st.caption(f"**{len(annonceurs)}** annonceurs available")
+        sel_y = st.multiselect(
+            "Year", options=years, default=[],
+            placeholder=("All years" if years else "—"),
+            key="media_year_filter",
+            disabled=not years,
+        )
+    with f3:
+        month_labels = {m: _MONTH_NAMES[m - 1] for m in months}
+        sel_m = st.multiselect(
+            "Month", options=months, default=[],
+            format_func=lambda m: month_labels.get(m, str(m)),
+            placeholder=("All months" if months else "—"),
+            key="media_month_filter",
+            disabled=not months,
+        )
 
     fdf = df if not sel else df[df["Annonceur"].isin(sel)]
+    if sel_y:
+        fdf = fdf[year_s.loc[fdf.index].isin(sel_y)]
+    if sel_m:
+        fdf = fdf[month_s.loc[fdf.index].isin(sel_m)]
 
     if fdf.empty:
         st.warning("No rows match the current selection.")
@@ -1269,15 +1361,42 @@ def render_paid() -> None:
 
     st.divider()
 
-    # ── Filter: Annonceur ─────────────────────────────────────────────────
+    # ── Filters: Annonceur + Year + Month ─────────────────────────────────
     annonceurs = sorted([a for a in df["Annonceur"].dropna().unique() if a]) \
         if "Annonceur" in df.columns else []
-    sel_a = st.multiselect(
-        "Annonceur", options=annonceurs, default=[],
-        placeholder="All annonceurs (leave empty for total)",
-        key="paid_annonceur_filter",
-    )
+    year_s, month_s = _derive_year_month(df)
+    years = sorted({int(y) for y in year_s.dropna().tolist()})
+    months = sorted({int(m) for m in month_s.dropna().tolist() if 1 <= int(m) <= 12})
+
+    fa, fy, fm = st.columns([2, 1, 1])
+    with fa:
+        sel_a = st.multiselect(
+            "Annonceur", options=annonceurs, default=[],
+            placeholder="All annonceurs (leave empty for total)",
+            key="paid_annonceur_filter",
+        )
+    with fy:
+        sel_y = st.multiselect(
+            "Year", options=years, default=[],
+            placeholder=("All years" if years else "—"),
+            key="paid_year_filter",
+            disabled=not years,
+        )
+    with fm:
+        month_labels = {m: _MONTH_NAMES[m - 1] for m in months}
+        sel_m = st.multiselect(
+            "Month", options=months, default=[],
+            format_func=lambda m: month_labels.get(m, str(m)),
+            placeholder=("All months" if months else "—"),
+            key="paid_month_filter",
+            disabled=not months,
+        )
+
     fdf = df[df["Annonceur"].isin(sel_a)] if sel_a else df.copy()
+    if sel_y:
+        fdf = fdf[year_s.loc[fdf.index].isin(sel_y)]
+    if sel_m:
+        fdf = fdf[month_s.loc[fdf.index].isin(sel_m)]
 
     if fdf.empty:
         st.warning("No rows match the current selection.")
