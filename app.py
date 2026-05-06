@@ -1022,22 +1022,8 @@ def render_media() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Paid section — Meta Ads-style global overview (inspired by Batam dashboard)
+# Paid section — social-media global overview (Meta Ads export)
 # ---------------------------------------------------------------------------
-PAID_PLATFORM_COLORS = {
-    "FB": "#7AA8F2",     # soft Meta blue
-    "IG": "#F0A6C9",     # soft Insta pink
-    "AN": "#B6A0F2",     # soft violet (Audience Network)
-    "MSGR": "#86E4C0",   # soft mint (Messenger)
-}
-PAID_GENDER_COLORS = {
-    "female": "#F0A6C9",
-    "male":   "#7AA8F2",
-    "all":    "#B6A0F2",
-    "unknown": "#5B6478",
-}
-
-
 PAID_REMOTE_DIR = "paid"
 PAID_MANIFEST_REMOTE = f"{PAID_REMOTE_DIR}/active.json"
 
@@ -1085,20 +1071,19 @@ def load_paid_df(remote_path: str, version: str) -> pd.DataFrame:
     else:
         df = pd.read_excel(PAID_DIR / Path(remote_path).name)
     numeric_cols = [
-        "Montant dépensé (USD)", "Impressions", "Couverture", "Clics (tous)",
-        "Clics sur un lien", "CTR (tous)", "CTR (taux de clics sur le lien)",
-        "CPC (Tous) (USD)", "CPC (coût par clic sur un lien) (USD)",
-        "CPM (Coût pour 1 000 impressions) (USD)", "Résultats", "Répétition",
+        "Reach", "Impressions", "Frequency", "Clicks (all)",
+        "Post engagements", "ThruPlays", "CTR (all)",
+        "Facebook likes", "Instagram profile visits",
     ]
     for c in numeric_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    for c in ("Genre", "plateforme", "campaign_type", "campaign_sub_type",
-              "Nom de la campagne"):
+    for c in ("Annonceur", "Campaign name"):
         if c in df.columns:
             df[c] = df[c].astype("string").str.strip()
-    if "Fin" in df.columns:
-        df["Fin"] = pd.to_datetime(df["Fin"], errors="coerce")
+    for c in ("Reporting starts", "Reporting ends"):
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce")
     return df
 
 
@@ -1119,7 +1104,8 @@ def render_paid() -> None:
     with st.expander("⬆️  Upload / replace the Paid Media Excel", expanded=False):
         with st.form("upload_paid", clear_on_submit=True):
             up = st.file_uploader(
-                "Excel file (.xlsx) — Meta / paid-media export",
+                "Excel file (.xlsx) — must contain: Annonceur, Campaign name, "
+                "Reach, Impressions, Clicks (all), Post engagements, ThruPlays, CTR (all)",
                 type=["xlsx", "xls"],
                 key="upl_paid",
             )
@@ -1136,7 +1122,7 @@ def render_paid() -> None:
                             "ok",
                             f"Paid data successfully uploaded — {Path(target).name}",
                         )
-                    except Exception as exc:  # pragma: no cover
+                    except Exception as exc:
                         st.session_state[flash_key] = ("err", f"Upload failed: {exc}")
                 st.rerun()
 
@@ -1146,96 +1132,82 @@ def render_paid() -> None:
         return
 
     df = load_paid_df(active["path"], active["uploaded_at"])
-
-    spend_col = "Montant dépensé (USD)"
-    if spend_col not in df.columns:
-        st.error(f"Missing required column: `{spend_col}`")
+    if df.empty:
+        st.warning("File could not be loaded or is empty.")
         return
 
     st.divider()
 
-    # ── Filters ───────────────────────────────────────────────────────────
-    f1, f2 = st.columns(2)
-    with f1:
-        genres = sorted([g for g in df["Genre"].dropna().unique() if g]) \
-            if "Genre" in df.columns else []
-        sel_g = st.multiselect(
-            "Gender", genres, default=[],
-            placeholder="All genders",
-            key="paid_genre_filter",
-        )
-    with f2:
-        plats = sorted([p for p in df["plateforme"].dropna().unique() if p]) \
-            if "plateforme" in df.columns else []
-        sel_p = st.multiselect(
-            "Platform", plats, default=[],
-            placeholder="All platforms",
-            key="paid_plat_filter",
-        )
-
-    fdf = df.copy()
-    if sel_g:
-        fdf = fdf[fdf["Genre"].isin(sel_g)]
-    if sel_p:
-        fdf = fdf[fdf["plateforme"].isin(sel_p)]
+    # ── Filter: Annonceur ─────────────────────────────────────────────────
+    annonceurs = sorted([a for a in df["Annonceur"].dropna().unique() if a]) \
+        if "Annonceur" in df.columns else []
+    sel_a = st.multiselect(
+        "Annonceur", options=annonceurs, default=[],
+        placeholder="All annonceurs (leave empty for total)",
+        key="paid_annonceur_filter",
+    )
+    fdf = df[df["Annonceur"].isin(sel_a)] if sel_a else df.copy()
 
     if fdf.empty:
         st.warning("No rows match the current selection.")
         return
 
     # ── KPIs ──────────────────────────────────────────────────────────────
-    spend = fdf[spend_col].sum()
-    impr = fdf["Impressions"].sum() if "Impressions" in fdf else 0
-    reach = fdf["Couverture"].sum() if "Couverture" in fdf else 0
-    clicks = fdf["Clics (tous)"].sum() if "Clics (tous)" in fdf else 0
-    ctr = (clicks / impr * 100) if impr else 0
-    cpc = (spend / clicks) if clicks else 0
-    cpm = (spend / impr * 1000) if impr else 0
-
     def _kpi(label: str, value: str) -> str:
         return (f'<div class="kpi"><div class="label">{label}</div>'
                 f'<div class="value">{value}</div></div>')
 
+    impr      = fdf["Impressions"].sum() if "Impressions" in fdf else 0
+    reach     = fdf["Reach"].sum() if "Reach" in fdf else 0
+    clicks    = fdf["Clicks (all)"].sum() if "Clicks (all)" in fdf else 0
+    engage    = fdf["Post engagements"].sum() if "Post engagements" in fdf else 0
+    thruplays = fdf["ThruPlays"].sum() if "ThruPlays" in fdf else 0
+    avg_ctr   = fdf["CTR (all)"].mean() * 100 if "CTR (all)" in fdf and fdf["CTR (all)"].notna().any() else 0
+    fb_likes  = fdf["Facebook likes"].sum() if "Facebook likes" in fdf else 0
+    ig_visits = fdf["Instagram profile visits"].sum() if "Instagram profile visits" in fdf else 0
+
     k1, k2, k3, k4 = st.columns(4)
-    k1.markdown(_kpi("Spend (USD)", f"${spend:,.0f}"), unsafe_allow_html=True)
-    k2.markdown(_kpi("Impressions", _fmt_int(impr)), unsafe_allow_html=True)
-    k3.markdown(_kpi("Reach", _fmt_int(reach)), unsafe_allow_html=True)
-    k4.markdown(_kpi("Clicks", _fmt_int(clicks)), unsafe_allow_html=True)
+    k1.markdown(_kpi("Impressions",      _fmt_int(impr)),      unsafe_allow_html=True)
+    k2.markdown(_kpi("Reach",            _fmt_int(reach)),     unsafe_allow_html=True)
+    k3.markdown(_kpi("Clicks",           _fmt_int(clicks)),    unsafe_allow_html=True)
+    k4.markdown(_kpi("Post Engagements", _fmt_int(engage)),    unsafe_allow_html=True)
 
     k5, k6, k7, k8 = st.columns(4)
-    k5.markdown(_kpi("Avg CTR", f"{ctr:.2f}%"), unsafe_allow_html=True)
-    k6.markdown(_kpi("Avg CPC (USD)", f"${cpc:.3f}"), unsafe_allow_html=True)
-    k7.markdown(_kpi("Avg CPM (USD)", f"${cpm:.2f}"), unsafe_allow_html=True)
-    k8.markdown(_kpi("Campaigns", f'{fdf["Nom de la campagne"].nunique() if "Nom de la campagne" in fdf else 0}'),
-                unsafe_allow_html=True)
+    k5.markdown(_kpi("ThruPlays",     _fmt_int(thruplays)),        unsafe_allow_html=True)
+    k6.markdown(_kpi("Avg CTR",       f"{avg_ctr:.2f}%"),          unsafe_allow_html=True)
+    k7.markdown(_kpi("Facebook Likes", _fmt_int(fb_likes)),        unsafe_allow_html=True)
+    k8.markdown(_kpi("IG Profile Visits", _fmt_int(ig_visits)),    unsafe_allow_html=True)
 
     st.write("")
 
-    # ── Spend by platform donut + Spend by gender bar ─────────────────────
+    # ── Impressions by Annonceur (donut) + Engagement mix by Annonceur (bar) ─
     c1, c2 = st.columns(2)
+
+    ANNONCEUR_COLORS = ["#B6A0F2", "#F0A6C9", "#7AA8F2", "#86E4C0", "#FBC78A", "#7DD3DC"]
+
     with c1:
-        st.markdown("#### 📱 Spend by platform")
-        if "plateforme" not in fdf.columns:
-            st.caption("Column `plateforme` is missing.")
+        st.markdown("#### 🍩 Impressions by annonceur")
+        if "Annonceur" not in fdf.columns:
+            st.caption("Column `Annonceur` is missing.")
         else:
-            plat = (fdf.groupby("plateforme", dropna=True)[spend_col].sum()
-                    .reset_index().sort_values(spend_col, ascending=False))
-            plat = plat[plat[spend_col] > 0]
-            if plat.empty:
-                st.caption("No spend recorded.")
+            by_ann = (fdf.groupby("Annonceur", dropna=True)["Impressions"].sum()
+                      .reset_index().sort_values("Impressions", ascending=False))
+            by_ann = by_ann[by_ann["Impressions"] > 0]
+            if by_ann.empty:
+                st.caption("No data.")
             else:
+                color_map = {a: ANNONCEUR_COLORS[i % len(ANNONCEUR_COLORS)]
+                             for i, a in enumerate(by_ann["Annonceur"])}
                 fig = px.pie(
-                    plat, names="plateforme", values=spend_col, hole=0.62,
-                    color="plateforme",
-                    color_discrete_map={p: PAID_PLATFORM_COLORS.get(p, "#B6A0F2")
-                                        for p in plat["plateforme"]},
+                    by_ann, names="Annonceur", values="Impressions", hole=0.62,
+                    color="Annonceur", color_discrete_map=color_map,
                 )
                 fig.update_traces(
                     textposition="outside", textinfo="label+percent",
                     textfont=dict(color="#F5F3FF", size=13),
                     marker=dict(line=dict(color="#0E0B1F", width=3)),
-                    pull=[0.02] * len(plat),
-                    hovertemplate="<b>%{label}</b><br>$%{value:,.0f}<br>%{percent}<extra></extra>",
+                    pull=[0.02] * len(by_ann),
+                    hovertemplate="<b>%{label}</b><br>%{value:,.0f} impressions<br>%{percent}<extra></extra>",
                 )
                 fig.update_layout(
                     height=420,
@@ -1245,129 +1217,111 @@ def render_paid() -> None:
                     legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center"),
                     margin=dict(t=10, b=20, l=10, r=10),
                     annotations=[dict(
-                        text=f"<b>${spend/1000:,.1f}K</b><br>"
-                             f"<span style='font-size:11px;color:#C4B5FD'>spend</span>",
-                        x=0.5, y=0.5, font=dict(size=20, color="#F5F3FF"),
+                        text=f"<b>{_fmt_int(impr)}</b><br>"
+                             f"<span style='font-size:11px;color:#C4B5FD'>impressions</span>",
+                        x=0.5, y=0.5, font=dict(size=18, color="#F5F3FF"),
                         showarrow=False,
                     )],
+                    hoverlabel=dict(bgcolor="#1A1330", bordercolor="#A78BFA",
+                                   font=dict(color="#F5F3FF")),
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
     with c2:
-        st.markdown("#### 👥 Spend by gender")
-        if "Genre" not in fdf.columns:
-            st.caption("Column `Genre` is missing.")
+        st.markdown("#### 💬 Engagement breakdown by annonceur")
+        eng_cols = [c for c in ("Post engagements", "ThruPlays", "Facebook likes",
+                                "Instagram profile visits") if c in fdf.columns]
+        if not eng_cols or "Annonceur" not in fdf.columns:
+            st.caption("Engagement columns missing.")
         else:
-            gen = (fdf.groupby("Genre", dropna=True)[spend_col].sum()
-                   .reset_index().sort_values(spend_col, ascending=True))
-            gen = gen[gen[spend_col] > 0]
-            if gen.empty:
-                st.caption("No spend recorded.")
-            else:
-                fig = px.bar(
-                    gen, x=spend_col, y="Genre", orientation="h",
-                    color="Genre",
-                    color_discrete_map={g: PAID_GENDER_COLORS.get(str(g).lower(),
-                                        "#B6A0F2") for g in gen["Genre"]},
-                    text=spend_col,
-                )
-                fig.update_traces(
-                    texttemplate="$%{text:,.0f}", textposition="outside",
-                    marker=dict(line=dict(width=0), cornerradius=10),
-                    hovertemplate="<b>%{y}</b><br>$%{x:,.0f}<extra></extra>",
-                )
-                fig.update_layout(
-                    height=420,
-                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(color="#F5F3FF", family="Inter, sans-serif"),
-                    xaxis=dict(gridcolor="rgba(167,139,250,0.12)", title="",
-                               tickformat="$,.0f"),
-                    yaxis=dict(title=""),
-                    showlegend=False,
-                    bargap=0.35,
-                    margin=dict(t=20, b=10, l=10, r=30),
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-    # ── Top 10 campaigns by spend ─────────────────────────────────────────
-    st.markdown("#### 🏆 Top 10 campaigns by spend")
-    if "Nom de la campagne" not in fdf.columns:
-        st.caption("Column `Nom de la campagne` is missing.")
-    else:
-        agg = (fdf.groupby("Nom de la campagne", dropna=True)
-               .agg(**{
-                   "Spend": (spend_col, "sum"),
-                   "Impressions": ("Impressions", "sum") if "Impressions" in fdf else (spend_col, "size"),
-                   "Clicks": ("Clics (tous)", "sum") if "Clics (tous)" in fdf else (spend_col, "size"),
-               })
-               .reset_index()
-               .sort_values("Spend", ascending=False)
-               .head(10)
-               .sort_values("Spend", ascending=True))
-        if agg.empty:
-            st.caption("No campaigns to display.")
-        else:
-            agg["short"] = agg["Nom de la campagne"].apply(
-                lambda s: (s[:55] + "…") if len(str(s)) > 55 else s
-            )
+            eng = (fdf.groupby("Annonceur", dropna=True)[eng_cols].sum().reset_index())
+            eng_melted = eng.melt(id_vars="Annonceur", var_name="Metric", value_name="Value")
+            eng_melted = eng_melted[eng_melted["Value"] > 0]
+            metric_colors = {
+                "Post engagements":       "#B6A0F2",
+                "ThruPlays":              "#F0A6C9",
+                "Facebook likes":         "#7AA8F2",
+                "Instagram profile visits": "#86E4C0",
+            }
             fig = px.bar(
-                agg, x="Spend", y="short", orientation="h",
-                color="Spend",
-                color_continuous_scale=["#6366F1", "#A78BFA", "#F0A6C9"],
-                custom_data=["Impressions", "Clicks", "Nom de la campagne"],
+                eng_melted, x="Annonceur", y="Value", color="Metric",
+                barmode="group",
+                color_discrete_map=metric_colors,
+                text="Value",
             )
             fig.update_traces(
-                marker=dict(line=dict(width=0), cornerradius=10),
-                hovertemplate=(
-                    "<b>%{customdata[2]}</b><br>"
-                    "Spend : $%{x:,.0f}<br>"
-                    "Impressions : %{customdata[0]:,.0f}<br>"
-                    "Clicks : %{customdata[1]:,.0f}"
-                    "<extra></extra>"
-                ),
+                texttemplate="%{text:,.0f}", textposition="outside",
+                marker=dict(line=dict(width=0), cornerradius=8),
+                hovertemplate="<b>%{x}</b> — %{data.name}<br>%{y:,.0f}<extra></extra>",
             )
             fig.update_layout(
-                height=max(440, 38 * len(agg)),
+                height=420,
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#F5F3FF", family="Inter, sans-serif"),
-                xaxis=dict(gridcolor="rgba(167,139,250,0.12)", title="",
-                           tickformat="$,.0f"),
-                yaxis=dict(title="", tickfont=dict(size=11)),
-                coloraxis_showscale=False,
-                bargap=0.25,
-                margin=dict(t=10, b=10, l=10, r=20),
+                xaxis=dict(title="", gridcolor="rgba(167,139,250,0.12)"),
+                yaxis=dict(title="", gridcolor="rgba(167,139,250,0.12)"),
+                legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center",
+                            title=""),
+                bargap=0.2, bargroupgap=0.08,
+                margin=dict(t=20, b=20, l=10, r=10),
                 hoverlabel=dict(bgcolor="#1A1330", bordercolor="#A78BFA",
                                 font=dict(color="#F5F3FF")),
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    # ── Spend trend over time (Fin date) ──────────────────────────────────
-    if "Fin" in fdf.columns and fdf["Fin"].notna().any():
-        st.markdown("#### 📈 Spend over time")
-        trend = (fdf.dropna(subset=["Fin"])
-                 .assign(_d=fdf["Fin"].dt.to_period("W").dt.start_time)
-                 .groupby("_d", as_index=False)[spend_col].sum()
-                 .sort_values("_d"))
-        if not trend.empty:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=trend["_d"], y=trend[spend_col],
-                mode="lines+markers",
-                line=dict(color="#B6A0F2", width=3, shape="spline", smoothing=0.7),
-                marker=dict(size=9, color="#F0A6C9",
-                            line=dict(width=2, color="#0E0B1F")),
-                fill="tozeroy",
-                fillcolor="rgba(182,160,242,0.18)",
-                hovertemplate="<b>Week of %{x|%b %d, %Y}</b><br>$%{y:,.0f}<extra></extra>",
-            ))
+    # ── Top campaigns by Impressions ──────────────────────────────────────
+    st.markdown("#### 🏆 Campaigns overview")
+    if "Campaign name" not in fdf.columns:
+        st.caption("Column `Campaign name` is missing.")
+    else:
+        agg_cols = {
+            "Impressions": ("Impressions", "sum"),
+            "Reach":       ("Reach", "sum"),
+            "Clicks":      ("Clicks (all)", "sum"),
+            "Engagements": ("Post engagements", "sum"),
+        }
+        # only include cols that exist
+        agg_cols = {k: v for k, v in agg_cols.items() if v[0] in fdf.columns}
+        agg = (fdf.groupby("Campaign name", dropna=True)
+               .agg(**agg_cols)
+               .reset_index()
+               .sort_values("Impressions", ascending=False)
+               .head(12)
+               .sort_values("Impressions", ascending=True))
+        if agg.empty:
+            st.caption("No campaigns to display.")
+        else:
+            agg["short"] = agg["Campaign name"].apply(
+                lambda s: (s[:60] + "…") if len(str(s)) > 60 else s
+            )
+            custom = [agg[c].values if c in agg.columns else [0]*len(agg)
+                      for c in ("Reach", "Clicks", "Engagements")]
+            fig = px.bar(
+                agg, x="Impressions", y="short", orientation="h",
+                color="Impressions",
+                color_continuous_scale=["#6366F1", "#A78BFA", "#F0A6C9"],
+                custom_data=list(zip(*custom)) if custom[0] is not None else None,
+            )
+            fig.update_traces(
+                marker=dict(line=dict(width=0), cornerradius=10),
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Impressions : %{x:,.0f}<br>"
+                    "Reach : %{customdata[0]:,.0f}<br>"
+                    "Clicks : %{customdata[1]:,.0f}<br>"
+                    "Engagements : %{customdata[2]:,.0f}"
+                    "<extra></extra>"
+                ),
+            )
             fig.update_layout(
-                height=380,
+                height=max(460, 42 * len(agg)),
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#F5F3FF", family="Inter, sans-serif"),
-                xaxis=dict(title="", showgrid=False),
-                yaxis=dict(title="", gridcolor="rgba(167,139,250,0.12)",
-                           tickformat="$,.0f"),
-                margin=dict(t=20, b=20, l=10, r=10),
+                xaxis=dict(gridcolor="rgba(167,139,250,0.12)", title="Impressions"),
+                yaxis=dict(title="", tickfont=dict(size=11)),
+                coloraxis_showscale=False,
+                bargap=0.22,
+                margin=dict(t=10, b=10, l=10, r=20),
                 hoverlabel=dict(bgcolor="#1A1330", bordercolor="#A78BFA",
                                 font=dict(color="#F5F3FF")),
             )
