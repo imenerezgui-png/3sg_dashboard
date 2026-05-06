@@ -759,6 +759,52 @@ def _fmt_int(v: float) -> str:
     return f"{int(round(v)):,}".replace(",", " ")
 
 
+def _render_insight_cards(title: str, items: list[dict]) -> None:
+    """Render a row of styled insight cards.
+
+    Each item: {"icon": "🏆", "label": "...", "value": "...", "sub": "..."}
+    """
+    if not items:
+        return
+    st.markdown(f"#### {title}")
+    cards_css = """
+    <style>
+    .insight-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+                 gap:14px;margin-top:6px;margin-bottom:8px;}
+    .insight-card{background:linear-gradient(135deg,rgba(167,139,250,0.12) 0%,
+                  rgba(240,166,201,0.08) 100%);
+                  border:1px solid rgba(167,139,250,0.25);
+                  border-radius:16px;padding:16px 18px;
+                  box-shadow:0 6px 24px rgba(0,0,0,0.25);
+                  transition:transform .15s ease, box-shadow .15s ease;}
+    .insight-card:hover{transform:translateY(-3px);
+                  box-shadow:0 10px 30px rgba(167,139,250,0.25);}
+    .insight-card .ic-head{display:flex;align-items:center;gap:8px;
+                  font-size:12px;text-transform:uppercase;letter-spacing:.08em;
+                  color:#C4B5FD;font-weight:600;}
+    .insight-card .ic-icon{font-size:18px;}
+    .insight-card .ic-value{font-size:22px;font-weight:800;color:#F5F3FF;
+                  margin-top:6px;line-height:1.2;}
+    .insight-card .ic-sub{font-size:12px;color:#A78BFA;margin-top:4px;}
+    </style>
+    """
+    html = ['<div class="insight-row">']
+    for it in items:
+        icon = it.get("icon", "✨")
+        label = it.get("label", "")
+        value = it.get("value", "—")
+        sub = it.get("sub", "")
+        html.append(
+            f'<div class="insight-card">'
+            f'<div class="ic-head"><span class="ic-icon">{icon}</span>{label}</div>'
+            f'<div class="ic-value">{value}</div>'
+            + (f'<div class="ic-sub">{sub}</div>' if sub else "")
+            + '</div>'
+        )
+    html.append('</div>')
+    st.markdown(cards_css + "".join(html), unsafe_allow_html=True)
+
+
 def render_media() -> None:
     # Upload panel (single active file)
     flash_key = "flash_Media"
@@ -1014,6 +1060,50 @@ def render_media() -> None:
                 showlegend=False,
             )
             st.plotly_chart(fig, use_container_width=True)
+
+    # ── Key insights ─────────────────────────────────────────────────────
+    insights: list[dict] = []
+    try:
+        if "Media" in fdf.columns and fdf["Tarif Final"].sum() > 0:
+            mix = fdf.groupby("Media")["Tarif Final"].sum().sort_values(ascending=False)
+            top_media = mix.index[0]
+            share = mix.iloc[0] / mix.sum() * 100
+            insights.append({
+                "icon": "🏆", "label": "Top media",
+                "value": str(top_media),
+                "sub": f"{share:.1f}% of total invest. ({_fmt_money(mix.iloc[0])})",
+            })
+        if "Annonceur" in fdf.columns and fdf["Tarif Final"].sum() > 0:
+            top_a = fdf.groupby("Annonceur")["Tarif Final"].sum().sort_values(ascending=False)
+            insights.append({
+                "icon": "👑", "label": "Top annonceur",
+                "value": str(top_a.index[0]),
+                "sub": f"{_fmt_money(top_a.iloc[0])} invested",
+            })
+        if "Mois" in fdf.columns and fdf["Tarif Final"].sum() > 0:
+            _mois = pd.to_numeric(fdf["Mois"], errors="coerce")
+            tmp = pd.DataFrame({"_m": _mois, "spend": fdf["Tarif Final"].values}).dropna()
+            if not tmp.empty:
+                by_month = tmp.groupby("_m")["spend"].sum().sort_values(ascending=False)
+                month_names = ["Jan","Feb","Mar","Apr","May","Jun",
+                               "Jul","Aug","Sep","Oct","Nov","Dec"]
+                top_m = int(by_month.index[0])
+                insights.append({
+                    "icon": "📅", "label": "Peak month",
+                    "value": month_names[top_m - 1] if 1 <= top_m <= 12 else str(top_m),
+                    "sub": f"{_fmt_money(by_month.iloc[0])} that month",
+                })
+        if "GRP" in fdf.columns and fdf["GRP"].sum() > 0:
+            cpp = fdf["Tarif Final"].sum() / fdf["GRP"].sum()
+            insights.append({
+                "icon": "📈", "label": "Avg cost per GRP",
+                "value": _fmt_money(cpp),
+                "sub": f"{_fmt_int(fdf['GRP'].sum())} total GRP",
+            })
+    except Exception:
+        pass
+    if insights:
+        _render_insight_cards("✨ Key insights", insights)
 
     st.caption(
         f"Source: `{Path(active['path']).name}` — "
@@ -1382,6 +1472,49 @@ def render_paid() -> None:
                                 font=dict(color="#F5F3FF")),
             )
             st.plotly_chart(fig, use_container_width=True)
+
+    # ── Key insights ─────────────────────────────────────────────────────
+    insights: list[dict] = []
+    try:
+        if "Annonceur" in fdf.columns and "Impressions" in fdf.columns and impr > 0:
+            by_a = fdf.groupby("Annonceur")["Impressions"].sum().sort_values(ascending=False)
+            share = by_a.iloc[0] / by_a.sum() * 100
+            insights.append({
+                "icon": "👑", "label": "Top annonceur",
+                "value": str(by_a.index[0]),
+                "sub": f"{share:.1f}% of impressions ({_fmt_int(by_a.iloc[0])})",
+            })
+        if "Campaign name" in fdf.columns and "Impressions" in fdf.columns and impr > 0:
+            by_c = fdf.groupby("Campaign name")["Impressions"].sum().sort_values(ascending=False)
+            top_name = str(by_c.index[0])
+            short = (top_name[:38] + "…") if len(top_name) > 38 else top_name
+            insights.append({
+                "icon": "🚀", "label": "Best campaign (impressions)",
+                "value": short,
+                "sub": f"{_fmt_int(by_c.iloc[0])} impressions",
+            })
+        if "Campaign name" in fdf.columns and "CTR (all)" in fdf.columns:
+            ctr_by_c = (fdf.groupby("Campaign name")["CTR (all)"].mean()
+                        .dropna().sort_values(ascending=False))
+            if not ctr_by_c.empty and ctr_by_c.iloc[0] > 0:
+                top_name = str(ctr_by_c.index[0])
+                short = (top_name[:38] + "…") if len(top_name) > 38 else top_name
+                insights.append({
+                    "icon": "🎯", "label": "Best CTR campaign",
+                    "value": f"{ctr_by_c.iloc[0]*100:.2f}%",
+                    "sub": short,
+                })
+        if reach > 0 and impr > 0:
+            freq = impr / reach
+            insights.append({
+                "icon": "🔁", "label": "Avg frequency",
+                "value": f"{freq:.2f}×",
+                "sub": f"{_fmt_int(impr)} impr. / {_fmt_int(reach)} reach",
+            })
+    except Exception:
+        pass
+    if insights:
+        _render_insight_cards("✨ Key insights", insights)
 
     st.caption(
         f"Source: `{Path(active['path']).name}` — "
