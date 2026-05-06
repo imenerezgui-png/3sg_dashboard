@@ -671,7 +671,7 @@ MEDIA_COLOR_SEQ = ["#A78BFA", "#8B5CF6", "#6366F1", "#EC4899", "#F59E0B",
 MEDIA_COLORS = {
     "tv":         "#F0A6C9",  # soft pink
     "radio":      "#B6A0F2",  # soft violet
-    "affichage":  "#FBC78A",  # soft amber
+    "affichage":  "#FFCB90",  # soft amber
     "presse":     "#5B6478",  # muted slate grey
     "digital":    "#7DD3DC",  # soft cyan
     "cinema":     "#86E4C0",  # soft mint
@@ -1404,6 +1404,20 @@ with _hcol2:
         "Upload a PDF, attach the event date, and find it later in the monthly calendar."
     )
 
+if not SB_ENABLED:
+    st.error(
+        "⚠️ **Supabase is NOT connected** — uploads will be lost on app restart.  \n"
+        "Go to your Streamlit Cloud app → **⋮ → Settings → Secrets** and paste:\n"
+        "```toml\n"
+        "[supabase]\n"
+        'url = "https://lqzlbjhhwtllmgyotwue.supabase.co"\n'
+        'service_key = "YOUR_SERVICE_ROLE_KEY"\n'
+        'bucket = "3sg-reports"\n'
+        "```\n"
+        "Then save — the app will reboot and connect automatically.",
+        icon="🔴",
+    )
+
 with st.sidebar:
     if LOGO_PATH.exists():
         st.image(str(LOGO_PATH), use_container_width=True)
@@ -1417,7 +1431,10 @@ with st.sidebar:
     for s in SECTIONS:
         st.write(f"{SECTION_ICONS[s]} **{s}** — {by_section[s]}")
     st.divider()
-    st.caption("Reports are stored locally in `./reports/<section>/`.")
+    if SB_ENABLED:
+        st.success("🟢 Supabase connected — uploads persist.")
+    else:
+        st.error("🔴 Supabase NOT connected — add secrets!")
 
 
 # ---------------------------------------------------------------------------
