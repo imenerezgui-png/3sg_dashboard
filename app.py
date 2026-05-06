@@ -94,10 +94,40 @@ def sb_upload(remote_path: str, data: bytes, content_type: str = "application/oc
             "cache-control": "3600",
         }),
         data=data,
-        timeout=120,
+        timeout=300,
     )
     if not r.ok:
-        raise RuntimeError(f"Upload failed ({r.status_code})")
+        # Surface the real Supabase error so users see the cause (e.g. file too large)
+        msg = ""
+        try:
+            j = r.json()
+            msg = j.get("message") or j.get("error") or ""
+        except Exception:
+            msg = (r.text or "")[:300]
+        size_mb = len(data) / (1024 * 1024)
+        hint = ""
+        if r.status_code == 400 and ("size" in msg.lower() or "exceed" in msg.lower()
+                                      or "too large" in msg.lower() or size_mb > 50):
+            hint = (f" — file is {size_mb:.1f} MB. "
+                    "Raise the bucket file-size limit in Supabase "
+                    "(Storage → bucket → Settings → File size limit).")
+        raise RuntimeError(f"Upload failed ({r.status_code}): {msg}{hint}")
+
+
+def sb_ensure_bucket_limits(max_mb: int = 200) -> None:
+    """Best-effort: raise this bucket's file_size_limit so large PDFs are accepted.
+
+    Uses the storage admin API (service-role key required). Silent on failure
+    (e.g. RLS or insufficient privileges)."""
+    if not SB_ENABLED:
+        return
+    try:
+        url = f"{SB_URL}/storage/v1/bucket/{SB_BUCKET}"
+        body = {"file_size_limit": max_mb * 1024 * 1024, "public": True}
+        requests.put(url, headers=_sb_headers({"Content-Type": "application/json"}),
+                     data=json.dumps(body), timeout=15)
+    except Exception:
+        pass
 
 
 def sb_download(remote_path: str) -> bytes | None:
@@ -143,6 +173,17 @@ def sb_put_json(remote_path: str, obj) -> None:
         json.dumps(obj, indent=2, ensure_ascii=False).encode("utf-8"),
         content_type="application/json",
     )
+
+
+@st.cache_resource(show_spinner=False)
+def _sb_bootstrap() -> bool:
+    """Run once per app process: raise bucket limits so large PDFs are accepted."""
+    sb_ensure_bucket_limits(max_mb=200)
+    return True
+
+
+if SB_ENABLED:
+    _sb_bootstrap()
 
 # ---------------------------------------------------------------------------
 # CSS — dark violet theme reused from the Batam dashboard
