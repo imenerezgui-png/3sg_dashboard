@@ -97,20 +97,23 @@ def sb_upload(remote_path: str, data: bytes, content_type: str = "application/oc
         timeout=120,
     )
     if not r.ok:
-        raise RuntimeError(f"Supabase upload failed ({r.status_code}): {r.text}")
+        raise RuntimeError(f"Upload failed ({r.status_code})")
 
 
 def sb_download(remote_path: str) -> bytes | None:
-    """Download bytes from the bucket. Returns None if not found."""
+    """Download bytes from the bucket. Returns None if not found or on error."""
     if not SB_ENABLED:
         return None
-    url = f"{SB_URL}/storage/v1/object/{SB_BUCKET}/{quote(remote_path)}"
-    r = requests.get(url, headers=_sb_headers(), timeout=120)
-    if r.status_code == 404:
+    try:
+        url = f"{SB_URL}/storage/v1/object/{SB_BUCKET}/{quote(remote_path)}"
+        r = requests.get(url, headers=_sb_headers(), timeout=120)
+        if r.status_code == 404:
+            return None
+        if not r.ok:
+            return None
+        return r.content
+    except Exception:
         return None
-    if not r.ok:
-        raise RuntimeError(f"Supabase download failed ({r.status_code}): {r.text}")
-    return r.content
 
 
 def sb_delete(remote_path: str) -> None:
