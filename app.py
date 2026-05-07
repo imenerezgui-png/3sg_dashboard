@@ -9,10 +9,12 @@ filed in that month.
 from __future__ import annotations
 
 import base64
+import html as _html
 import io
 import json
 import re
 import tempfile
+import uuid
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -917,6 +919,188 @@ def _render_insight_cards(title: str, items: list[dict]) -> None:
     st.markdown(cards_css + "".join(html), unsafe_allow_html=True)
 
 
+# ---------------------------------------------------------------------------
+# Per-section notes (campaigns annotations)
+# ---------------------------------------------------------------------------
+NOTES_REMOTE_DIR = "notes"
+NOTES_LOCAL_DIR = APP_DIR / "static" / "notes"
+
+
+def _notes_remote(section: str) -> str:
+    return f"{NOTES_REMOTE_DIR}/{section.lower()}.json"
+
+
+def _notes_local(section: str) -> Path:
+    return NOTES_LOCAL_DIR / f"{section.lower()}.json"
+
+
+def load_notes(section: str) -> list[dict]:
+    if SB_ENABLED:
+        data = sb_get_json(_notes_remote(section), default=[])
+        return data if isinstance(data, list) else []
+    p = _notes_local(section)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_notes(section: str, notes: list[dict]) -> None:
+    if SB_ENABLED:
+        sb_put_json(_notes_remote(section), notes)
+    else:
+        NOTES_LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+        _notes_local(section).write_text(
+            json.dumps(notes, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+
+_NOTES_CSS = """
+<style>
+.note-card{
+    background:linear-gradient(135deg,rgba(167,139,250,0.10) 0%,
+                                       rgba(240,166,201,0.06) 100%);
+    border:1px solid rgba(167,139,250,0.22);
+    border-radius:14px;padding:14px 16px;margin:8px 0;
+    box-shadow:0 4px 18px rgba(0,0,0,0.22);
+}
+.note-card .note-head{font-size:13px;color:#C4B5FD;margin-bottom:6px;
+                       text-transform:uppercase;letter-spacing:.05em;}
+.note-card .note-camp{color:#F5F3FF;font-weight:700;font-size:15px;
+                       text-transform:none;letter-spacing:0;}
+.note-card .note-body{color:#F5F3FF;font-size:14px;line-height:1.55;
+                       white-space:pre-wrap;}
+</style>
+"""
+
+
+def render_notes_panel(section: str) -> None:
+    """Notes block: Add note / See notes buttons + persisted storage."""
+    st.markdown("#### 📝 Campaign notes")
+    st.markdown(_NOTES_CSS, unsafe_allow_html=True)
+
+    add_key = f"notes_show_add_{section}"
+    see_key = f"notes_show_see_{section}"
+    flash_key = f"notes_flash_{section}"
+
+    # Flash message (after add/delete)
+    flash = st.session_state.pop(flash_key, None)
+    if flash:
+        kind, msg = flash
+        if kind == "ok":
+            st.success(msg)
+        else:
+            st.error(msg)
+
+    b1, b2, _ = st.columns([1, 1, 4])
+    with b1:
+        if st.button("➕ Add note", key=f"notes_btn_add_{section}",
+                     use_container_width=True):
+            st.session_state[add_key] = not st.session_state.get(add_key, False)
+            st.session_state[see_key] = False
+            st.rerun()
+    with b2:
+        if st.button("👁️ See notes", key=f"notes_btn_see_{section}",
+                     use_container_width=True):
+            st.session_state[see_key] = not st.session_state.get(see_key, False)
+            st.session_state[add_key] = False
+            st.rerun()
+
+    # ── Add note form ────────────────────────────────────────────────────
+    if st.session_state.get(add_key):
+        with st.form(f"notes_form_{section}", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                d = st.date_input("Date", value=date.today(),
+                                  key=f"notes_date_{section}")
+            with c2:
+                campaign = st.text_input("Campaign name",
+                                         placeholder="e.g. Summer launch 2026",
+                                         key=f"notes_camp_{section}")
+            text = st.text_area(
+                "Note (≈ 200 words max)",
+                max_chars=1500, height=200,
+                placeholder="Write your observations, learnings, next steps…",
+                key=f"notes_text_{section}",
+                help="Up to ~200 words (1500 characters).",
+            )
+            words = len(text.split()) if text else 0
+            st.caption(f"{words} / 200 words")
+            cs1, cs2 = st.columns([1, 1])
+            with cs1:
+                save = st.form_submit_button("💾 Save note", type="primary",
+                                             use_container_width=True)
+            with cs2:
+                cancel = st.form_submit_button("✖ Cancel",
+                                               use_container_width=True)
+            if save:
+                if not campaign.strip() or not text.strip():
+                    st.warning("Campaign name and note text are both required.")
+                else:
+                    notes = load_notes(section)
+                    notes.append({
+                        "id": uuid.uuid4().hex[:10],
+                        "date": d.isoformat(),
+                        "campaign": campaign.strip(),
+                        "text": text.strip(),
+                        "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    })
+                    try:
+                        save_notes(section, notes)
+                        st.session_state[flash_key] = ("ok", "Note saved.")
+                        st.session_state[add_key] = False
+                    except Exception as exc:
+                        st.session_state[flash_key] = ("err", f"Save failed: {exc}")
+                    st.rerun()
+            if cancel:
+                st.session_state[add_key] = False
+                st.rerun()
+
+    # ── See notes view ───────────────────────────────────────────────────
+    if st.session_state.get(see_key):
+        notes = load_notes(section)
+        if not notes:
+            st.info("No notes yet. Click **Add note** to create the first one.")
+            return
+        campaigns = sorted({n.get("campaign", "") for n in notes if n.get("campaign")})
+        sel = st.selectbox(
+            "Filter by campaign",
+            options=["— All campaigns —"] + campaigns,
+            key=f"notes_filter_{section}",
+        )
+        shown = (notes if sel == "— All campaigns —"
+                 else [n for n in notes if n.get("campaign") == sel])
+        shown = sorted(shown, key=lambda n: n.get("date", ""), reverse=True)
+        st.caption(f"{len(shown)} note(s)")
+        for n in shown:
+            safe_text = _html.escape(n.get("text", "")).replace("\n", "<br>")
+            safe_camp = _html.escape(n.get("campaign", ""))
+            safe_date = _html.escape(n.get("date", ""))
+            st.markdown(
+                f'<div class="note-card">'
+                f'<div class="note-head"><span class="note-camp">{safe_camp}</span>'
+                f'  ·  📅 {safe_date}</div>'
+                f'<div class="note-body">{safe_text}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            with st.container():
+                _, dc = st.columns([6, 1])
+                with dc:
+                    if st.button("🗑️ Delete", key=f"notes_del_{section}_{n['id']}",
+                                 use_container_width=True):
+                        kept = [x for x in load_notes(section) if x.get("id") != n["id"]]
+                        try:
+                            save_notes(section, kept)
+                            st.session_state[flash_key] = ("ok", "Note deleted.")
+                        except Exception as exc:
+                            st.session_state[flash_key] = ("err", f"Delete failed: {exc}")
+                        st.rerun()
+
+
 def render_media() -> None:
     # Upload panel (single active file)
     flash_key = "flash_Media"
@@ -1687,13 +1871,16 @@ def render_section(section: str) -> None:
     st.markdown(f"## {icon} {section}")
     if section == "Media":
         render_media()
-        return
-    if section == "Paid":
+    elif section == "Paid":
         render_paid()
-        return
-    upload_panel(section)
+    else:
+        upload_panel(section)
+        st.divider()
+        render_calendar(section, load_index())
+
+    # Notes block — available in every section
     st.divider()
-    render_calendar(section, load_index())
+    render_notes_panel(section)
 
 
 # ---------------------------------------------------------------------------
