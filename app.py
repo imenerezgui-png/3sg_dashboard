@@ -1546,8 +1546,25 @@ def render_paid() -> None:
     st.divider()
 
     # ── Filters: Annonceur + Year + Month ─────────────────────────────────
-    annonceurs = sorted([a for a in df["Annonceur"].dropna().unique() if a]) \
-        if "Annonceur" in df.columns else []
+    # Find the Annonceur column case-insensitively, ignoring extra spaces.
+    ann_col = next(
+        (c for c in df.columns if str(c).strip().lower() == "annonceur"),
+        None,
+    )
+    if ann_col is None:
+        annonceurs: list[str] = []
+        st.info(
+            "ℹ️ The uploaded Excel does not contain an `Annonceur` column. "
+            "Showing all rows. Re-upload an Excel with an `Annonceur` column "
+            "to enable that filter."
+        )
+    else:
+        annonceurs = sorted({
+            str(a).strip()
+            for a in df[ann_col].dropna().tolist()
+            if str(a).strip()
+        })
+
     year_s, month_s = _derive_year_month(df)
     years = sorted({int(y) for y in year_s.dropna().tolist()})
     months = sorted({int(m) for m in month_s.dropna().tolist() if 1 <= int(m) <= 12})
@@ -1555,9 +1572,13 @@ def render_paid() -> None:
     fa, fy, fm = st.columns([2, 1, 1])
     with fa:
         sel_a = st.multiselect(
-            "Annonceur", options=annonceurs, default=[],
-            placeholder="All annonceurs (leave empty for total)",
+            "Annonceur",
+            options=annonceurs,
+            default=[],
+            placeholder=("All annonceurs (leave empty for total)"
+                         if annonceurs else "— column not in file —"),
             key="paid_annonceur_filter",
+            disabled=not annonceurs,
         )
     with fy:
         sel_y = st.multiselect(
@@ -1576,7 +1597,13 @@ def render_paid() -> None:
             disabled=not months,
         )
 
-    fdf = df[df["Annonceur"].isin(sel_a)] if sel_a else df.copy()
+    fdf = df.copy()
+    # If the source column had a different case/spacing, expose it as "Annonceur"
+    # so the downstream charts and insights keep working unchanged.
+    if ann_col is not None and ann_col != "Annonceur":
+        fdf["Annonceur"] = fdf[ann_col]
+    if sel_a and ann_col is not None:
+        fdf = fdf[fdf[ann_col].astype("string").str.strip().isin(sel_a)]
     if sel_y:
         fdf = fdf[year_s.loc[fdf.index].isin(sel_y)]
     if sel_m:
