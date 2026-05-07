@@ -977,8 +977,13 @@ _NOTES_CSS = """
 """
 
 
-def render_notes_panel(section: str) -> None:
-    """Notes block: Add note / See notes buttons + persisted storage."""
+def render_notes_panel(section: str,
+                       campaign_options: list[str] | None = None) -> None:
+    """Notes block: Add note / See notes buttons + persisted storage.
+
+    If ``campaign_options`` is provided (and non-empty), the campaign field in the
+    Add-note form becomes a dropdown of those values instead of a free text input.
+    """
     st.markdown("#### 📝 Campaign notes")
     st.markdown(_NOTES_CSS, unsafe_allow_html=True)
 
@@ -1009,6 +1014,8 @@ def render_notes_panel(section: str) -> None:
             st.session_state[add_key] = False
             st.rerun()
 
+    use_dropdown = bool(campaign_options)
+
     # ── Add note form ────────────────────────────────────────────────────
     if st.session_state.get(add_key):
         with st.form(f"notes_form_{section}", clear_on_submit=True):
@@ -1017,9 +1024,19 @@ def render_notes_panel(section: str) -> None:
                 d = st.date_input("Date", value=date.today(),
                                   key=f"notes_date_{section}")
             with c2:
-                campaign = st.text_input("Campaign name",
-                                         placeholder="e.g. Summer launch 2026",
-                                         key=f"notes_camp_{section}")
+                if use_dropdown:
+                    campaign = st.selectbox(
+                        "Campaign",
+                        options=campaign_options,
+                        key=f"notes_camp_{section}",
+                        help="Choose a campaign from the uploaded data.",
+                    )
+                else:
+                    campaign = st.text_input(
+                        "Campaign name",
+                        placeholder="e.g. Summer launch 2026",
+                        key=f"notes_camp_{section}",
+                    )
             text = st.text_area(
                 "Note (≈ 200 words max)",
                 max_chars=1500, height=200,
@@ -1922,18 +1939,47 @@ def render_paid() -> None:
 def render_section(section: str) -> None:
     icon = SECTION_ICONS.get(section, "📁")
     st.markdown(f"## {icon} {section}")
+
+    campaign_options: list[str] | None = None  # None → free text
+
     if section == "Media":
         render_media()
+        # Media keeps the free-text campaign field (per request)
     elif section == "Paid":
         render_paid()
+        # Build dropdown from "Campaign name" column of the active Paid Excel
+        try:
+            active = _active_paid_meta()
+            if active is not None:
+                pdf_ = load_paid_df(active["path"], active["uploaded_at"])
+                if "Campaign name" in pdf_.columns:
+                    campaign_options = sorted({
+                        str(c).strip()
+                        for c in pdf_["Campaign name"].dropna().tolist()
+                        if str(c).strip()
+                    })
+        except Exception:
+            campaign_options = None
     else:
         upload_panel(section)
         st.divider()
-        render_calendar(section, load_index())
+        rows = load_index()
+        render_calendar(section, rows)
+        # PDF-calendar sections: dropdown of distinct event names uploaded
+        try:
+            campaign_options = sorted({
+                str(r.get("event_name", "")).strip()
+                for r in rows
+                if r.get("section") == section and str(r.get("event_name", "")).strip()
+            })
+            if not campaign_options:
+                campaign_options = None
+        except Exception:
+            campaign_options = None
 
     # Notes block — available in every section
     st.divider()
-    render_notes_panel(section)
+    render_notes_panel(section, campaign_options=campaign_options)
 
 
 # ---------------------------------------------------------------------------
