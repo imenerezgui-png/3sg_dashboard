@@ -1569,17 +1569,43 @@ def render_paid() -> None:
     years = sorted({int(y) for y in year_s.dropna().tolist()})
     months = sorted({int(m) for m in month_s.dropna().tolist() if 1 <= int(m) <= 12})
 
+    # Default Annonceur = top one by Impressions (so the dashboard always lands
+    # on a meaningful single advertiser; user can switch).
+    default_annonceur: str | None = None
+    if annonceurs and ann_col is not None:
+        try:
+            if "Impressions" in df.columns:
+                top_series = (df.assign(_a=df[ann_col].astype("string").str.strip())
+                              .dropna(subset=["_a"])
+                              .groupby("_a")["Impressions"].sum()
+                              .sort_values(ascending=False))
+                if not top_series.empty:
+                    default_annonceur = str(top_series.index[0])
+        except Exception:
+            default_annonceur = None
+        if default_annonceur is None:
+            default_annonceur = annonceurs[0]
+
     fa, fy, fm = st.columns([2, 1, 1])
     with fa:
-        sel_a = st.multiselect(
-            "Annonceur",
-            options=annonceurs,
-            default=[],
-            placeholder=("All annonceurs (leave empty for total)"
-                         if annonceurs else "— column not in file —"),
-            key="paid_annonceur_filter",
-            disabled=not annonceurs,
-        )
+        if annonceurs:
+            sel_idx = (annonceurs.index(default_annonceur)
+                       if default_annonceur in annonceurs else 0)
+            sel_a_value = st.selectbox(
+                "Annonceur",
+                options=annonceurs,
+                index=sel_idx,
+                key="paid_annonceur_filter",
+            )
+        else:
+            st.selectbox(
+                "Annonceur",
+                options=["— column not in file —"],
+                index=0,
+                key="paid_annonceur_filter",
+                disabled=True,
+            )
+            sel_a_value = None
     with fy:
         sel_y = st.multiselect(
             "Year", options=years, default=[],
@@ -1602,8 +1628,8 @@ def render_paid() -> None:
     # so the downstream charts and insights keep working unchanged.
     if ann_col is not None and ann_col != "Annonceur":
         fdf["Annonceur"] = fdf[ann_col]
-    if sel_a and ann_col is not None:
-        fdf = fdf[fdf[ann_col].astype("string").str.strip().isin(sel_a)]
+    if sel_a_value and ann_col is not None:
+        fdf = fdf[fdf[ann_col].astype("string").str.strip() == sel_a_value]
     if sel_y:
         fdf = fdf[year_s.loc[fdf.index].isin(sel_y)]
     if sel_m:
