@@ -772,6 +772,23 @@ def _active_media_meta() -> dict | None:
         return None
 
 
+def _delete_media_data() -> None:
+    """Remove the active Media Excel + its manifest, then clear the cache."""
+    meta = _active_media_meta()
+    if SB_ENABLED:
+        if meta:
+            sb_delete(meta["path"])
+        sb_delete(MEDIA_MANIFEST_REMOTE)
+    else:
+        if meta:
+            local_file = MEDIA_DIR / Path(meta["path"]).name
+            if local_file.exists():
+                local_file.unlink()
+        if MEDIA_MANIFEST.exists():
+            MEDIA_MANIFEST.unlink()
+    load_media_df.clear()  # type: ignore[attr-defined]
+
+
 @st.cache_data(show_spinner=False)
 def load_media_df(remote_path: str, version: str) -> pd.DataFrame:
     if SB_ENABLED:
@@ -1158,6 +1175,29 @@ def render_media() -> None:
                         st.session_state[flash_key] = ("err", f"Upload failed: {exc}")
                 st.rerun()
 
+        # ── Delete all data ────────────────────────────────────────────────
+        if _active_media_meta() is not None:
+            st.markdown("---")
+            if st.session_state.get("media_delete_confirm"):
+                st.warning("⚠️ This will permanently remove the uploaded Media file. Are you sure?")
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("✅ Yes, delete", key="media_delete_yes",
+                                 use_container_width=True, type="primary"):
+                        _delete_media_data()
+                        st.session_state["media_delete_confirm"] = False
+                        st.session_state[flash_key] = ("ok", "Media data deleted.")
+                        st.rerun()
+                with col_no:
+                    if st.button("↩️ Cancel", key="media_delete_no", use_container_width=True):
+                        st.session_state["media_delete_confirm"] = False
+                        st.rerun()
+            else:
+                if st.button("🗑️ Delete all data", key="media_delete_btn",
+                             use_container_width=True):
+                    st.session_state["media_delete_confirm"] = True
+                    st.rerun()
+
     active = _active_media_meta()
     if active is None:
         st.info("No Plurimedia file uploaded yet. Use the panel above to add one.")
@@ -1485,6 +1525,23 @@ def _active_paid_meta() -> dict | None:
         return None
 
 
+def _delete_paid_data() -> None:
+    """Remove the active Paid Excel + its manifest, then clear the cache."""
+    meta = _active_paid_meta()
+    if SB_ENABLED:
+        if meta:
+            sb_delete(meta["path"])
+        sb_delete(PAID_MANIFEST_REMOTE)
+    else:
+        if meta:
+            local_file = PAID_DIR / Path(meta["path"]).name
+            if local_file.exists():
+                local_file.unlink()
+        if PAID_MANIFEST.exists():
+            PAID_MANIFEST.unlink()
+    load_paid_df.clear()  # type: ignore[attr-defined]
+
+
 @st.cache_data(show_spinner=False)
 def load_paid_df(remote_path: str, version: str) -> pd.DataFrame:
     if SB_ENABLED:
@@ -1575,6 +1632,29 @@ def render_paid() -> None:
                     except Exception as exc:
                         st.session_state[flash_key] = ("err", f"Upload failed: {exc}")
                 st.rerun()
+
+        # ── Delete all data ────────────────────────────────────────────────
+        if _active_paid_meta() is not None:
+            st.markdown("---")
+            if st.session_state.get("paid_delete_confirm"):
+                st.warning("⚠️ This will permanently remove the uploaded Paid file. Are you sure?")
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("✅ Yes, delete", key="paid_delete_yes",
+                                 use_container_width=True, type="primary"):
+                        _delete_paid_data()
+                        st.session_state["paid_delete_confirm"] = False
+                        st.session_state[flash_key] = ("ok", "Paid data deleted.")
+                        st.rerun()
+                with col_no:
+                    if st.button("↩️ Cancel", key="paid_delete_no", use_container_width=True):
+                        st.session_state["paid_delete_confirm"] = False
+                        st.rerun()
+            else:
+                if st.button("🗑️ Delete all data", key="paid_delete_btn",
+                             use_container_width=True):
+                    st.session_state["paid_delete_confirm"] = True
+                    st.rerun()
 
     active = _active_paid_meta()
     if active is None:
