@@ -1936,7 +1936,6 @@ def render_paid() -> None:
                     barmode="group",
                     color_discrete_map=obj_colors,
                     text="Rate",
-                    custom_data=["Budget"],
                 )
                 fig.update_traces(
                     texttemplate="%{text:.1f}%", textposition="outside",
@@ -1944,8 +1943,7 @@ def render_paid() -> None:
                     hovertemplate=(
                         "<b>%{x}</b><br>"
                         "Objective : %{fullData.name}<br>"
-                        "Share : %{y:.1f}%<br>"
-                        "Budget : %{customdata[0]:,.2f} DT"
+                        "Share : %{y:.1f}%"
                         "<extra></extra>"
                     ),
                 )
