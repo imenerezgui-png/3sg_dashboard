@@ -1717,6 +1717,10 @@ def render_paid() -> None:
     OBJECTIVE_COLORS = ["#B6A0F2", "#F0A6C9", "#7AA8F2", "#86E4C0", "#FBC78A",
                         "#7DD3DC", "#FFA8A8", "#C4B5FD"]
 
+    _CHART_H   = 460
+    _CHART_M   = dict(t=50, b=60, l=20, r=20)
+    _LEGEND_KW = dict(orientation="h", y=-0.14, x=0.5, xanchor="center", title="")
+
     with c1:
         st.markdown("#### 💰 Total budget by annonceur")
         if "Annonceur" not in fdf.columns or "Budget" not in fdf.columns:
@@ -1736,19 +1740,19 @@ def render_paid() -> None:
                     color="Annonceur", color_discrete_map=color_map,
                 )
                 fig.update_traces(
-                    textposition="outside", textinfo="label+percent",
+                    textposition="inside", textinfo="percent",
                     textfont=dict(color="#F5F3FF", size=13),
                     marker=dict(line=dict(color="#0E0B1F", width=3)),
                     pull=[0.02] * len(by_ann),
                     hovertemplate="<b>%{label}</b><br>%{value:,.2f} DT<br>%{percent}<extra></extra>",
                 )
                 fig.update_layout(
-                    height=420,
+                    height=_CHART_H,
                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                     font=dict(color="#F5F3FF", family="Inter, sans-serif"),
                     showlegend=True,
-                    legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center"),
-                    margin=dict(t=10, b=20, l=10, r=10),
+                    legend=_LEGEND_KW,
+                    margin=_CHART_M,
                     annotations=[dict(
                         text=f"<b>{total_budget:,.0f} DT</b><br>"
                              f"<span style='font-size:11px;color:#C4B5FD'>total budget</span>",
@@ -1762,7 +1766,6 @@ def render_paid() -> None:
 
     with c2:
         st.markdown("#### 🎯 Investment rate per objective")
-        st.caption("Share of each annonceur's budget allocated to each objective.")
         if not {"Annonceur", "Objective", "Budget"}.issubset(fdf.columns):
             st.caption("Columns `Annonceur`, `Objective` and `Budget` are required.")
         else:
@@ -1797,17 +1800,16 @@ def render_paid() -> None:
                     ),
                 )
                 fig.update_layout(
-                    height=420,
+                    height=_CHART_H,
                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                     font=dict(color="#F5F3FF", family="Inter, sans-serif"),
                     xaxis=dict(title="", gridcolor="rgba(167,139,250,0.12)"),
                     yaxis=dict(title="Investment rate (%)",
                                gridcolor="rgba(167,139,250,0.12)",
-                               ticksuffix="%"),
-                    legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center",
-                                title=""),
+                               ticksuffix="%", range=[0, 115]),
+                    legend=_LEGEND_KW,
                     bargap=0.2, bargroupgap=0.08,
-                    margin=dict(t=20, b=20, l=10, r=10),
+                    margin=_CHART_M,
                     hoverlabel=dict(bgcolor="#1A1330", bordercolor="#A78BFA",
                                     font=dict(color="#F5F3FF")),
                 )
