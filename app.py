@@ -1494,17 +1494,43 @@ def load_paid_df(remote_path: str, version: str) -> pd.DataFrame:
         df = pd.read_excel(io.BytesIO(raw))
     else:
         df = pd.read_excel(PAID_DIR / Path(remote_path).name)
+
+    # Normalize column names so old (English) and new (French OMD) schemas
+    # both work without touching the rest of the code.
+    # Collapse runs of whitespace and strip — handles "Budget  dt" double space.
+    df.columns = [re.sub(r"\s+", " ", str(c)).strip() for c in df.columns]
+
+    rename_map = {
+        # OMD MultiCampagnes (French) → canonical English names
+        "Nom de la campagne":              "Campaign name",
+        "Couverture":                      "Reach",
+        "Clics (tous)":                    "Clicks (all)",
+        "Interactions avec la publication": "Post engagements",
+        "J'aime sur Facebook":             "Facebook likes",
+        "J’aime sur Facebook":             "Facebook likes",  # curly apostrophe
+        "Visites du profil Instagram":     "Instagram profile visits",
+        "Budget dt":                       "Budget",
+        "Budget DT":                       "Budget",
+        "Indicateur de résultats":         "Objective",
+        "Indicateur de resultats":         "Objective",
+    }
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+
     numeric_cols = [
         "Reach", "Impressions", "Frequency", "Clicks (all)",
         "Post engagements", "ThruPlays", "CTR (all)",
         "Facebook likes", "Instagram profile visits",
+        "Budget", "Résultats",
     ]
     for c in numeric_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    for c in ("Annonceur", "Campaign name"):
+    for c in ("Annonceur", "Campaign name", "Objective"):
         if c in df.columns:
             df[c] = df[c].astype("string").str.strip()
+    # Normalize objective casing so "reach"/"Reach" don't split into two slices
+    if "Objective" in df.columns:
+        df["Objective"] = df["Objective"].str.title()
     for c in ("Reporting starts", "Reporting ends"):
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
@@ -1684,26 +1710,29 @@ def render_paid() -> None:
 
     st.write("")
 
-    # ── Impressions by Annonceur (donut) + Engagement mix by Annonceur (bar) ─
+    # ── Total Budget by Annonceur (donut) + Investment rate per Objective (bar)
     c1, c2 = st.columns(2)
 
     ANNONCEUR_COLORS = ["#B6A0F2", "#F0A6C9", "#7AA8F2", "#86E4C0", "#FBC78A", "#7DD3DC"]
+    OBJECTIVE_COLORS = ["#B6A0F2", "#F0A6C9", "#7AA8F2", "#86E4C0", "#FBC78A",
+                        "#7DD3DC", "#FFA8A8", "#C4B5FD"]
 
     with c1:
-        st.markdown("#### 🍩 Impressions by annonceur")
-        if "Annonceur" not in fdf.columns:
-            st.caption("Column `Annonceur` is missing.")
+        st.markdown("#### 💰 Total budget by annonceur")
+        if "Annonceur" not in fdf.columns or "Budget" not in fdf.columns:
+            st.caption("Columns `Annonceur` and `Budget` are required.")
         else:
-            by_ann = (fdf.groupby("Annonceur", dropna=True)["Impressions"].sum()
-                      .reset_index().sort_values("Impressions", ascending=False))
-            by_ann = by_ann[by_ann["Impressions"] > 0]
+            by_ann = (fdf.groupby("Annonceur", dropna=True)["Budget"].sum()
+                      .reset_index().sort_values("Budget", ascending=False))
+            by_ann = by_ann[by_ann["Budget"] > 0]
             if by_ann.empty:
-                st.caption("No data.")
+                st.caption("No budget data.")
             else:
                 color_map = {a: ANNONCEUR_COLORS[i % len(ANNONCEUR_COLORS)]
                              for i, a in enumerate(by_ann["Annonceur"])}
+                total_budget = by_ann["Budget"].sum()
                 fig = px.pie(
-                    by_ann, names="Annonceur", values="Impressions", hole=0.62,
+                    by_ann, names="Annonceur", values="Budget", hole=0.62,
                     color="Annonceur", color_discrete_map=color_map,
                 )
                 fig.update_traces(
@@ -1711,7 +1740,7 @@ def render_paid() -> None:
                     textfont=dict(color="#F5F3FF", size=13),
                     marker=dict(line=dict(color="#0E0B1F", width=3)),
                     pull=[0.02] * len(by_ann),
-                    hovertemplate="<b>%{label}</b><br>%{value:,.0f} impressions<br>%{percent}<extra></extra>",
+                    hovertemplate="<b>%{label}</b><br>%{value:,.2f} DT<br>%{percent}<extra></extra>",
                 )
                 fig.update_layout(
                     height=420,
@@ -1721,8 +1750,8 @@ def render_paid() -> None:
                     legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center"),
                     margin=dict(t=10, b=20, l=10, r=10),
                     annotations=[dict(
-                        text=f"<b>{_fmt_int(impr)}</b><br>"
-                             f"<span style='font-size:11px;color:#C4B5FD'>impressions</span>",
+                        text=f"<b>{total_budget:,.0f} DT</b><br>"
+                             f"<span style='font-size:11px;color:#C4B5FD'>total budget</span>",
                         x=0.5, y=0.5, font=dict(size=18, color="#F5F3FF"),
                         showarrow=False,
                     )],
@@ -1732,46 +1761,57 @@ def render_paid() -> None:
                 st.plotly_chart(fig, use_container_width=True)
 
     with c2:
-        st.markdown("#### 💬 Engagement breakdown by annonceur")
-        eng_cols = [c for c in ("Post engagements", "ThruPlays", "Facebook likes",
-                                "Instagram profile visits") if c in fdf.columns]
-        if not eng_cols or "Annonceur" not in fdf.columns:
-            st.caption("Engagement columns missing.")
+        st.markdown("#### 🎯 Investment rate per objective")
+        st.caption("Share of each annonceur's budget allocated to each objective.")
+        if not {"Annonceur", "Objective", "Budget"}.issubset(fdf.columns):
+            st.caption("Columns `Annonceur`, `Objective` and `Budget` are required.")
         else:
-            eng = (fdf.groupby("Annonceur", dropna=True)[eng_cols].sum().reset_index())
-            eng_melted = eng.melt(id_vars="Annonceur", var_name="Metric", value_name="Value")
-            eng_melted = eng_melted[eng_melted["Value"] > 0]
-            metric_colors = {
-                "Post engagements":       "#B6A0F2",
-                "ThruPlays":              "#F0A6C9",
-                "Facebook likes":         "#7AA8F2",
-                "Instagram profile visits": "#86E4C0",
-            }
-            fig = px.bar(
-                eng_melted, x="Annonceur", y="Value", color="Metric",
-                barmode="group",
-                color_discrete_map=metric_colors,
-                text="Value",
-            )
-            fig.update_traces(
-                texttemplate="%{text:,.0f}", textposition="outside",
-                marker=dict(line=dict(width=0), cornerradius=8),
-                hovertemplate="<b>%{x}</b><br>%{y:,.0f}<extra></extra>",
-            )
-            fig.update_layout(
-                height=420,
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#F5F3FF", family="Inter, sans-serif"),
-                xaxis=dict(title="", gridcolor="rgba(167,139,250,0.12)"),
-                yaxis=dict(title="", gridcolor="rgba(167,139,250,0.12)"),
-                legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center",
-                            title=""),
-                bargap=0.2, bargroupgap=0.08,
-                margin=dict(t=20, b=20, l=10, r=10),
-                hoverlabel=dict(bgcolor="#1A1330", bordercolor="#A78BFA",
-                                font=dict(color="#F5F3FF")),
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            inv = (fdf.dropna(subset=["Objective"])
+                   .groupby(["Annonceur", "Objective"], dropna=True)["Budget"]
+                   .sum().reset_index())
+            inv = inv[inv["Budget"] > 0]
+            if inv.empty:
+                st.caption("No budget data per objective.")
+            else:
+                totals = inv.groupby("Annonceur")["Budget"].transform("sum")
+                inv["Rate"] = inv["Budget"] / totals * 100
+                objectives = sorted(inv["Objective"].unique())
+                obj_colors = {o: OBJECTIVE_COLORS[i % len(OBJECTIVE_COLORS)]
+                              for i, o in enumerate(objectives)}
+                fig = px.bar(
+                    inv, x="Annonceur", y="Rate", color="Objective",
+                    barmode="group",
+                    color_discrete_map=obj_colors,
+                    text="Rate",
+                    custom_data=["Budget"],
+                )
+                fig.update_traces(
+                    texttemplate="%{text:.1f}%", textposition="outside",
+                    marker=dict(line=dict(width=0), cornerradius=8),
+                    hovertemplate=(
+                        "<b>%{x}</b><br>"
+                        "Objective : %{fullData.name}<br>"
+                        "Share : %{y:.1f}%<br>"
+                        "Budget : %{customdata[0]:,.2f} DT"
+                        "<extra></extra>"
+                    ),
+                )
+                fig.update_layout(
+                    height=420,
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#F5F3FF", family="Inter, sans-serif"),
+                    xaxis=dict(title="", gridcolor="rgba(167,139,250,0.12)"),
+                    yaxis=dict(title="Investment rate (%)",
+                               gridcolor="rgba(167,139,250,0.12)",
+                               ticksuffix="%"),
+                    legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center",
+                                title=""),
+                    bargap=0.2, bargroupgap=0.08,
+                    margin=dict(t=20, b=20, l=10, r=10),
+                    hoverlabel=dict(bgcolor="#1A1330", bordercolor="#A78BFA",
+                                    font=dict(color="#F5F3FF")),
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
     # ── Top campaigns by selected metric ─────────────────────────────────
     st.markdown("#### 🏆 Campaigns overview")
