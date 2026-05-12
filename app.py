@@ -1213,9 +1213,12 @@ def render_media() -> None:
 
     st.divider()
 
-    # ── Filters: Annonceur + Year + Month ─────────────────────────────────
+    # ── Filters: Annonceur + Category + Year + Month ──────────────────────
     annonceurs = sorted([a for a in df["Annonceur"].dropna().unique() if a])
-    f1, f2, f3 = st.columns([2, 1, 1])
+    has_cat = "Catégorie" in df.columns
+    categories = sorted([c for c in df["Catégorie"].dropna().unique() if c]) if has_cat else []
+
+    f1, f2, f3, f4 = st.columns([2, 2, 1, 1])
     with f1:
         sel = st.multiselect(
             "Annonceur",
@@ -1224,17 +1227,26 @@ def render_media() -> None:
             placeholder="All annonceurs (leave empty for total)",
             key="media_annonceur_filter",
         )
+    with f2:
+        sel_cat = st.multiselect(
+            "Category",
+            options=categories,
+            default=[],
+            placeholder="All categories" if categories else "—",
+            key="media_category_filter",
+            disabled=not has_cat,
+        )
     year_s, month_s = _derive_year_month(df)
     years = sorted({int(y) for y in year_s.dropna().tolist()})
     months = sorted({int(m) for m in month_s.dropna().tolist() if 1 <= int(m) <= 12})
-    with f2:
+    with f3:
         sel_y = st.multiselect(
             "Year", options=years, default=[],
             placeholder=("All years" if years else "—"),
             key="media_year_filter",
             disabled=not years,
         )
-    with f3:
+    with f4:
         month_labels = {m: _MONTH_NAMES[m - 1] for m in months}
         sel_m = st.multiselect(
             "Month", options=months, default=[],
@@ -1245,6 +1257,8 @@ def render_media() -> None:
         )
 
     fdf = df if not sel else df[df["Annonceur"].isin(sel)]
+    if sel_cat and has_cat:
+        fdf = fdf[fdf["Catégorie"].isin(sel_cat)]
     if sel_y:
         fdf = fdf[year_s.loc[fdf.index].isin(sel_y)]
     if sel_m:
