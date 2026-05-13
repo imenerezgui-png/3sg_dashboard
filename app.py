@@ -1563,22 +1563,69 @@ PAID_MANIFEST_REMOTE = f"{PAID_REMOTE_DIR}/active.json"
 
 
 def _save_paid_file(file_bytes: bytes, original_name: str) -> str:
-    suffix = Path(original_name).suffix.lower() or ".xlsx"
-    remote_path = f"{PAID_REMOTE_DIR}/paid{suffix}"
+    """Append the new upload to existing Paid data.
+
+    The new file's columns must match the columns of the currently stored data
+    (set equality, ignoring order). Exact-duplicate rows are removed so
+    re-uploading the same file is a no-op.
+    """
+    try:
+        df_new = pd.read_excel(io.BytesIO(file_bytes))
+    except Exception as exc:
+        raise ValueError(f"Could not read the Excel file: {exc}") from exc
+    if df_new.empty:
+        raise ValueError("The uploaded file is empty.")
+
+    remote_path = f"{PAID_REMOTE_DIR}/paid.xlsx"
+
+    existing = _active_paid_meta()
+    if existing:
+        try:
+            df_old = load_paid_df(existing["path"], existing["uploaded_at"])
+        except Exception:
+            df_old = pd.DataFrame()
+        if not df_old.empty:
+            old_cols = set(map(str, df_old.columns))
+            new_cols = set(map(str, df_new.columns))
+            if old_cols != new_cols:
+                only_new = sorted(new_cols - old_cols)
+                only_old = sorted(old_cols - new_cols)
+                msg = "Column mismatch with existing data."
+                if only_new:
+                    msg += f" Extra in new file: {', '.join(only_new)}."
+                if only_old:
+                    msg += f" Missing in new file: {', '.join(only_old)}."
+                raise ValueError(msg)
+            df_combined = pd.concat(
+                [df_old, df_new[df_old.columns]], ignore_index=True
+            ).drop_duplicates(ignore_index=True)
+        else:
+            df_combined = df_new
+    else:
+        df_combined = df_new
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df_combined.to_excel(writer, index=False)
+    out_bytes = buf.getvalue()
+
+    rows_before = 0 if not existing else len(df_old) if (existing and not df_old.empty) else 0
     meta = {
         "filename": Path(remote_path).name,
         "path": remote_path,
         "original_name": original_name,
         "uploaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "size_kb": round(len(file_bytes) / 1024, 1),
+        "size_kb": round(len(out_bytes) / 1024, 1),
+        "rows": int(len(df_combined)),
+        "rows_added": int(len(df_combined) - rows_before),
     }
     if SB_ENABLED:
-        sb_upload(remote_path, file_bytes,
+        sb_upload(remote_path, out_bytes,
                   content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         sb_put_json(PAID_MANIFEST_REMOTE, meta)
     else:
         PAID_DIR.mkdir(parents=True, exist_ok=True)
-        (PAID_DIR / Path(remote_path).name).write_bytes(file_bytes)
+        (PAID_DIR / Path(remote_path).name).write_bytes(out_bytes)
         PAID_MANIFEST.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     load_paid_df.clear()  # type: ignore[attr-defined]
     return remote_path
@@ -1678,11 +1725,11 @@ def render_paid() -> None:
             unsafe_allow_html=True,
         )
 
-    with st.expander("⬆️  Upload / replace the Paid Media Excel", expanded=False):
+    with st.expander("⬆️  Upload / append Paid Media data", expanded=False):
         with st.form("upload_paid", clear_on_submit=True):
             up = st.file_uploader(
-                "Excel file (.xlsx) — must contain: Annonceur, Campaign name, "
-                "Reach, Impressions, Clicks (all), Post engagements, ThruPlays, CTR (all)",
+                "Excel file (.xlsx) — appended to existing data. "
+                "Columns must match those already stored (Annonceur, Campaign name, etc.).",
                 type=["xlsx", "xls"],
                 key="upl_paid",
             )
@@ -1695,9 +1742,15 @@ def render_paid() -> None:
                 else:
                     try:
                         target = _save_paid_file(up.getvalue(), up.name)
+                        meta = _active_paid_meta() or {}
+                        added = meta.get("rows_added")
+                        total = meta.get("rows")
+                        detail = ""
+                        if added is not None and total is not None:
+                            detail = f" — {added:,} new rows added ({total:,} total)"
                         st.session_state[flash_key] = (
                             "ok",
-                            f"Paid data successfully uploaded — {Path(target).name}",
+                            f"Paid data appended{detail}.",
                         )
                     except Exception as exc:
                         st.session_state[flash_key] = ("err", f"Upload failed: {exc}")
