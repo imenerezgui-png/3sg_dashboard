@@ -753,16 +753,22 @@ def _save_media_file(file_bytes: bytes, original_name: str) -> str:
     if df_new.empty:
         raise ValueError("The uploaded file is empty.")
 
+    # Normalize column-name whitespace so trivial header diffs don't trigger
+    # a column-mismatch error (e.g. "Tarif Final " vs "Tarif Final").
+    df_new.columns = [re.sub(r"\s+", " ", str(c)).strip() for c in df_new.columns]
+
     remote_path = f"{MEDIA_REMOTE_DIR}/plurimedias.xlsx"
 
     # If we already have data, validate columns match and concatenate.
     existing = _active_media_meta()
+    df_old = pd.DataFrame()
     if existing:
         try:
             df_old = load_media_df(existing["path"], existing["uploaded_at"])
         except Exception:
             df_old = pd.DataFrame()
         if not df_old.empty:
+            df_old.columns = [re.sub(r"\s+", " ", str(c)).strip() for c in df_old.columns]
             old_cols = set(map(str, df_old.columns))
             new_cols = set(map(str, df_new.columns))
             if old_cols != new_cols:
@@ -1576,9 +1582,15 @@ def _save_paid_file(file_bytes: bytes, original_name: str) -> str:
     if df_new.empty:
         raise ValueError("The uploaded file is empty.")
 
+    # Apply the same column-rename / normalization that the loader uses, so
+    # comparing against existing (already normalized) data works regardless of
+    # whether the user uploads a French or English-labelled file.
+    df_new = _normalize_paid_df(df_new)
+
     remote_path = f"{PAID_REMOTE_DIR}/paid.xlsx"
 
     existing = _active_paid_meta()
+    df_old = pd.DataFrame()
     if existing:
         try:
             df_old = load_paid_df(existing["path"], existing["uploaded_at"])
@@ -1609,7 +1621,7 @@ def _save_paid_file(file_bytes: bytes, original_name: str) -> str:
         df_combined.to_excel(writer, index=False)
     out_bytes = buf.getvalue()
 
-    rows_before = 0 if not existing else len(df_old) if (existing and not df_old.empty) else 0
+    rows_before = len(df_old)
     meta = {
         "filename": Path(remote_path).name,
         "path": remote_path,
@@ -1660,18 +1672,14 @@ def _delete_paid_data() -> None:
 
 
 @st.cache_data(show_spinner=False)
-def load_paid_df(remote_path: str, version: str) -> pd.DataFrame:
-    if SB_ENABLED:
-        raw = sb_download(remote_path)
-        if raw is None:
-            return pd.DataFrame()
-        df = pd.read_excel(io.BytesIO(raw))
-    else:
-        df = pd.read_excel(PAID_DIR / Path(remote_path).name)
+def _normalize_paid_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize column names + dtypes for Paid data.
 
-    # Normalize column names so old (English) and new (French OMD) schemas
-    # both work without touching the rest of the code.
-    # Collapse runs of whitespace and strip — handles "Budget  dt" double space.
+    Used by both `load_paid_df` (when reading stored data) and
+    `_save_paid_file` (so the new upload is compared on the same canonical
+    schema as the existing data).
+    """
+    df = df.copy()
     df.columns = [re.sub(r"\s+", " ", str(c)).strip() for c in df.columns]
 
     rename_map = {
@@ -1702,13 +1710,23 @@ def load_paid_df(remote_path: str, version: str) -> pd.DataFrame:
     for c in ("Annonceur", "Campaign name", "Objective"):
         if c in df.columns:
             df[c] = df[c].astype("string").str.strip()
-    # Normalize objective casing so "reach"/"Reach" don't split into two slices
     if "Objective" in df.columns:
         df["Objective"] = df["Objective"].str.title()
     for c in ("Reporting starts", "Reporting ends"):
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
     return df
+
+
+def load_paid_df(remote_path: str, version: str) -> pd.DataFrame:
+    if SB_ENABLED:
+        raw = sb_download(remote_path)
+        if raw is None:
+            return pd.DataFrame()
+        df = pd.read_excel(io.BytesIO(raw))
+    else:
+        df = pd.read_excel(PAID_DIR / Path(remote_path).name)
+    return _normalize_paid_df(df)
 
 
 def render_paid() -> None:
